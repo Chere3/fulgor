@@ -327,6 +327,9 @@ public class MetalRenderPass implements RenderPassBackend {
         if (this.pipeline != null && this.pipeline.cloudUniforms() != null) {
             if (this.main) {
                 this.captureClouds(ib, indexCount, firstIndex, vertexOffset);
+                if (MetalShaders.softClouds()) {
+                    return; // the sky shader draws its own (MetalShaders.softClouds)
+                }
             }
             // The cloud shader reads where the sun is from the frame slot (MetalRenderPipeline.sunlitClouds).
             this.frameSlotsTaken = true;

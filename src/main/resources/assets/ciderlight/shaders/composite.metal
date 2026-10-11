@@ -48,11 +48,12 @@ static float3 grade(float3 c) {
     // The contrast curve only applies to mid and bright tones; dark tones are left alone so nights stay readable
     // (Complementary lifts its tonemap off dark colours the same way).
     float l0 = dot(x, float3(0.2126, 0.7152, 0.0722));
-    x = mix(x, x * x * (3.0 - 2.0 * x) * 0.32 + x * 0.68, smoothstep(0.05, 0.3, l0));
+    x = mix(x, x * x * (3.0 - 2.0 * x) * 0.2 + x * 0.8, smoothstep(0.05, 0.3, l0));
     float l = dot(x, float3(0.2126, 0.7152, 0.0722));
     // Vivid, not neon: muted colours gain the most, already saturated ones (a clear sky, lava) little.
     float chroma = max(x.r, max(x.g, x.b)) - min(x.r, min(x.g, x.b));
-    x = mix(float3(l), x, 1.0 + 0.28 * (1.0 - chroma));
+    // Not in the dark either: boosted, the blue of a moonlit night turns purple.
+    x = mix(float3(l), x, 1.0 + 0.18 * (1.0 - chroma) * smoothstep(0.03, 0.22, l));
     x *= float3(1.015, 1.0, 0.975);
     return saturate(x);
 }
@@ -482,7 +483,7 @@ fragment float4 composite_fragment(VOut in [[stage_in]],
             // Additive, so the rays still glow over the already bright sky around the sun.
             float3 rayCol = moon ? float3(0.55, 0.65, 0.95) : frame.sunColor.rgb * float3(1.0, 0.86, 0.64);
             // Weaker at golden hour: with the sun low, the shafts land on the already bright horizon and glare.
-            color += rayCol * shafts * 0.10 * (1.0 - 0.45 * frame.airNear.z) * shaftStrength * smoothstep(0.1, 0.6, frame.fogParams.x);
+            color += rayCol * shafts * 0.16 * (1.0 - 0.45 * frame.airNear.z) * shaftStrength * smoothstep(0.1, 0.6, frame.fogParams.x);
         }
     }
 
@@ -789,4 +790,25 @@ fragment float4 final_fragment(VOut in [[stage_in]], texture2d<float> source [[t
 // -Dciderlight.bloom=false
 fragment float4 final_plain_fragment(VOut in [[stage_in]], texture2d<float> source [[texture(0)]]) {
     return final_color(in, source, float3(0.0));
+}
+
+// --- soft cloud shadows ---
+// The cloud layer as a square around the camera, drawn into the light's cloud map (MetalShaders.renderCloudMap).
+struct SoftCloudMapOut {
+    float4 position [[position]];
+    float2 world;
+};
+
+vertex SoftCloudMapOut soft_cloud_map_vertex(uint vid [[vertex_id]], constant FrameData &frame [[buffer(0)]]) {
+    const float2 corners[6] = {float2(-1, -1), float2(1, -1), float2(-1, 1), float2(-1, 1), float2(1, -1), float2(1, 1)};
+    float3 fromCamera = float3(corners[vid].x * 2048.0, frame.cameraPos.w + CLOUD_LIFT, corners[vid].y * 2048.0);
+    SoftCloudMapOut out;
+    out.position = frame.shadowMat * float4(fromCamera + frame.camToAnchor.xyz, 1.0);
+    out.position.z = 0.5 * out.position.w; // any distance from the light counts
+    out.world = frame.cameraPos.xz + fromCamera.xz;
+    return out;
+}
+
+fragment float4 soft_cloud_map_fragment(SoftCloudMapOut in [[stage_in]], constant FrameData &frame [[buffer(0)]]) {
+    return float4(mix(1.0, CLOUD_TRANSMISSION_SOFT, cloud_cover(in.world, frame.params.x, frame.params.y)));
 }

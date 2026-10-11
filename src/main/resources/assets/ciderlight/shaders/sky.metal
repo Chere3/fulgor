@@ -18,5 +18,9 @@ fragment float4 sky_fragment(SkyOut in [[stage_in]], constant FrameData &frame [
     float4 nearPoint = frame.invViewProj * float4(in.uv * 2.0 - 1.0, 1.0, 1.0);
     float3 direction = normalize(nearPoint.xyz / nearPoint.w - eye.xyz / eye.w);
     // A lightning flash lights the clouded sky from within.
-    return float4(atmosphere_sky(frame, direction) + float3(0.20, 0.23, 0.32) * frame.lightning.w, 1.0);
+    float3 sky = atmosphere_sky(frame, direction) + float3(0.20, 0.23, 0.32) * frame.lightning.w;
+#ifdef MC_SOFT_CLOUDS
+    sky = cloud_layer(frame, direction, sky);
+#endif
+    return float4(sky, 1.0);
 }

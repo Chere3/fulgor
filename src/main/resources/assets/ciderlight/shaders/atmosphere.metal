@@ -77,20 +77,20 @@ static float3 atmosphere_sky(constant FrameData &frame, float3 direction) {
     float day = smoothstep(-0.16, 0.16, sun.y);
     float twilight = exp(-pow((sun.y + 0.015) / 0.18, 2.0));
     float horizon = exp(-max(V.y, 0.0) * 4.8);
-    // A hazy daytime sky: pale blue overhead, near white over a broad band above the horizon.
-    float haze = pow(1.0 - saturate(V.y), 1.6);
+    // A soft daytime sky: a clean mid blue overhead, paling to a light, slightly hazy blue towards the horizon.
+    float haze = pow(1.0 - saturate(V.y), 2.2);
     // A low sun (morning, evening) washes the whole sky towards lavender and pink, not only the horizon.
     float low = 1.0 - smoothstep(0.02, 0.9, sun.y);
     float towardSun = saturate(dot(normalize(float3(V.x, 0.03, V.z)), normalize(float3(sun.x, 0.03, sun.z))));
-    float3 dayZenith = mix(float3(0.35, 0.50, 0.74), float3(0.47, 0.49, 0.61), low);
-    float3 dayHorizon = mix(float3(0.70, 0.75, 0.82), float3(0.72, 0.66, 0.70), low);
-    float3 night = mix(float3(0.004, 0.009, 0.026), float3(0.028, 0.040, 0.075), horizon);
+    float3 dayZenith = mix(float3(0.36, 0.58, 0.88), float3(0.52, 0.47, 0.76), low);
+    float3 dayHorizon = mix(float3(0.68, 0.82, 0.94), float3(0.92, 0.70, 0.66), low);
+    float3 night = mix(float3(0.008, 0.020, 0.058), float3(0.040, 0.070, 0.140), horizon);
     float3 daylight = mix(dayZenith, dayHorizon, haze);
     // Towards the sun the haze glows bright and warm.
-    daylight += float3(0.12, 0.085, 0.05) * pow(towardSun, 2.0) * haze * (0.35 + 0.35 * low);
+    daylight += mix(float3(0.12, 0.085, 0.05), float3(0.30, 0.22, 0.0), low) * pow(towardSun, 2.0) * haze * (0.35 + 0.35 * low);
     float3 colour = mix(night, daylight, day);
     float sunset = twilight * horizon * (0.12 + 0.88 * pow(towardSun, 3.0));
-    colour = mix(colour, float3(0.96, 0.42, 0.22), sunset * 0.8);
+    colour = mix(colour, float3(1.0, 0.70, 0.30), sunset * 0.92);
     // A softer violet band opposite the sun instead of a uniformly orange sky.
     colour += float3(0.075, 0.017, 0.065) * twilight * horizon * pow(1.0 - towardSun, 2.0);
     float forward = pow(saturate(dot(V, sun)), 18.0);
@@ -99,6 +99,50 @@ static float3 atmosphere_sky(constant FrameData &frame, float3 direction) {
     float3 overcast = mix(float3(0.014, 0.018, 0.026), float3(0.40, 0.43, 0.47), day);
     overcast *= mix(0.82, 1.15, horizon);
     return max(mix(colour, overcast, rain * 0.88), 0.0);
+}
+
+// --- soft clouds ---
+// One layer of soft-edged clouds at the game's cloud height, in place of its blocky ones: where they are is a
+// function of the world position alone (cloud_cover), so the sky draws them (cloud_layer) and the light's cloud map
+// shades the ground under the same shapes (soft_cloud_map_fragment).
+constant float CLOUD_SCALE = 420.0;     // blocks across the broadest shapes
+// The layer sits this far above the game's cloud height: seen from a hilltop just under that height, it would
+// otherwise stretch into streaks.
+constant float CLOUD_LIFT = 150.0;
+constant float CLOUD_DRIFT = 1.4;       // blocks per second, towards +x
+constant float CLOUD_TRANSMISSION_SOFT = 0.58; // of the sunlight, through the thickest part
+
+// How much cloud is over the world position `p` (xz), 0 to 1.
+static float cloud_cover(float2 p, float time, float rain) {
+    float2 q = (p + float2(time * CLOUD_DRIFT, 0.0)) / CLOUD_SCALE;
+    float n = air_noise(q) * 0.52 + air_noise(q * 2.07 + float2(7.3, 1.9)) * 0.26
+            + air_noise(q * 4.3 + float2(-3.1, 5.7)) * 0.14 + air_noise(q * 9.1 + float2(2.2, -8.4)) * 0.08;
+    float threshold = mix(0.52, 0.30, saturate(rain));
+    return smoothstep(threshold, threshold + 0.13, n);
+}
+
+// The clouds over `sky` looking along `direction` from the camera. `aboveCamera` is the layer's height above it.
+static float3 cloud_layer(constant FrameData &frame, float3 direction, float3 sky) {
+    float aboveCamera = frame.cameraPos.w;
+    if (frame.solarDir.w < 0.5 || aboveCamera <= 0.0 || direction.y <= 0.012) return sky;
+    float distance = (aboveCamera + CLOUD_LIFT) / direction.y;
+    float2 p = frame.cameraPos.xz + direction.xz * distance;
+    float rain = frame.params.y;
+    float cover = cloud_cover(p, frame.params.x, rain);
+    if (cover <= 0.0) return sky;
+    // The side turned to the light is bright, the far side and the thick middle take the sky's colour: one more
+    // look-up a little way towards the light tells how much cloud the light crossed to get here.
+    float2 toLight = normalize(frame.sunDir.xz + float2(1e-4, 0.0)) * (1.0 - 0.6 * abs(frame.sunDir.y));
+    float towards = cloud_cover(p + toLight * 90.0, frame.params.x, rain);
+    float lit = saturate(1.0 - 0.6 * towards) * (1.0 - 0.2 * cover);
+    float day = mix(0.07, 1.0, frame.lightParams.x);
+    // A little rose in the shade, as the sky's blue and the ground's warmth mix under them.
+    float3 shade = frame.surfaceAmbient.rgb * float3(1.20, 1.04, 1.12);
+    float3 colour = (shade + frame.surfaceSun.rgb * 0.50 * lit * frame.sunDir.w) * day;
+    colour = mix(colour, float3(dot(colour, float3(0.2126, 0.7152, 0.0722))) * 0.62, saturate(rain));
+    // Towards the horizon the layer thins into the haze.
+    float fade = exp(-distance / 3600.0) * smoothstep(0.012, 0.09, direction.y);
+    return mix(sky, colour, cover * fade);
 }
 
 static float3 atmosphere_ambient(constant FrameData &frame) {

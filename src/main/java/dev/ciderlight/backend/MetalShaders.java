@@ -577,6 +577,17 @@ public final class MetalShaders {
     private static final String COMPOSITE_STATE = "Ciderlight composite";
     private static final String CLOUD_SHADOW_STATE = "Ciderlight cloud shadow";
     private static final String CLOUD_MAP_STATE = "Ciderlight cloud shadow map";
+    private static final String SOFT_CLOUD_MAP_STATE = "Ciderlight soft cloud shadow map";
+    /**
+     * Soft clouds: a layer drawn by the sky shader (cloud_layer) in place of the game's blocky ones, which are then
+     * only captured, to know that clouds are on and how high. -Dciderlight.clouds=vanilla keeps the game's.
+     */
+    private static final boolean SOFT_CLOUDS = !"vanilla".equals(System.getProperty("ciderlight.clouds"));
+
+    static boolean softClouds() {
+        return ENABLED && SOFT_CLOUDS && usesAtmosphere();
+    }
+
     private static final String SHADOW_SOLID_STATE = "Ciderlight shadow";
     private static final String SHADOW_CUTOUT_STATE = "Ciderlight shadow (cutout)";
     private static final String SHADOW_TRANSLUCENT_STATE = "Ciderlight shadow (translucent)";
@@ -628,7 +639,7 @@ public final class MetalShaders {
     }
 
     private long buildSkyState() {
-        long library = this.built(SKY_LIBRARY, () -> MetalNative.libraryCreate(this.device.context(), loadSource("sky.metal")));
+        long library = this.built(SKY_LIBRARY, () -> MetalNative.libraryCreate(this.device.context(), (SOFT_CLOUDS ? "#define MC_SOFT_CLOUDS 1\n" : "") + loadSource("sky.metal")));
         int[] desc = {0, 0, 1, COLOR_FORMAT, 15, 0, 0, 0, 0, 0, 0, 0, DEPTH_FORMAT, MetalConst.PRIM_TRIANGLES};
         return MetalNative.pipelineCreate(this.device.context(), library, "sky_vertex", library, "sky_fragment", desc, SKY_STATE);
     }
@@ -675,6 +686,13 @@ public final class MetalShaders {
         int[] desc = {0, 0, 1, CLOUD_MAP_FORMAT, 15, 1, BlendFactor.DST_COLOR.ordinal(), BlendFactor.ZERO.ordinal(), BlendOp.ADD.ordinal(),
             BlendFactor.ONE.ordinal(), BlendFactor.ZERO.ordinal(), BlendOp.ADD.ordinal(), -1, MetalConst.PRIM_TRIANGLES};
         return MetalNative.pipelineCreate(this.device.context(), library, "cloud_map_vertex", library, "cloud_map_fragment", desc, CLOUD_MAP_STATE);
+    }
+
+    /** The soft clouds' shadow: their layer, as a square around the camera, seen from the light. */
+    private long buildSoftCloudMapState() {
+        long library = this.compositeLibrary();
+        int[] desc = {0, 0, 1, CLOUD_MAP_FORMAT, 15, 0, 0, 0, 0, 0, 0, 0, -1, MetalConst.PRIM_TRIANGLES};
+        return MetalNative.pipelineCreate(this.device.context(), library, "soft_cloud_map_vertex", library, "soft_cloud_map_fragment", desc, SOFT_CLOUD_MAP_STATE);
     }
 
     private long buildTerrainShadowState(final boolean cutout, final int[] descriptor) {
@@ -853,6 +871,14 @@ public final class MetalShaders {
         this.skyFrame.set(ValueLayout.JAVA_FLOAT, SOLAR_OFFSET + 12, 1.0F);
         this.skyFrame.set(ValueLayout.JAVA_FLOAT, 116, minecraft.level.getRainLevel(partialTick));
         this.skyFrame.set(ValueLayout.JAVA_FLOAT, LIGHTNING_OFFSET + 12, this.sampleFrame.get(ValueLayout.JAVA_FLOAT, LIGHTNING_OFFSET + 12));
+        if (SOFT_CLOUDS) {
+            // What cloud_layer reads besides: the light's direction and strength, the clock, the camera's position with
+            // the cloud layer's height above it, the day factor, and the light on surfaces.
+            MemorySegment.copy(this.sampleFrame, 80, this.skyFrame, 80, 16);
+            this.skyFrame.set(ValueLayout.JAVA_FLOAT, 112, this.sampleFrame.get(ValueLayout.JAVA_FLOAT, 112));
+            MemorySegment.copy(this.sampleFrame, 336, this.skyFrame, 336, 32);
+            MemorySegment.copy(this.sampleFrame, SURFACE_LIGHT_OFFSET, this.skyFrame, SURFACE_LIGHT_OFFSET, 32);
+        }
         if (this.skyState == 0L) {
             this.skyState = this.built(SKY_STATE, this::buildSkyState);
         }
@@ -2062,7 +2088,7 @@ public final class MetalShaders {
         }
         // Clouds dim the light like a grey filter rather than blocking it: the ground and the fog under them are
         // shaded, sunlight through the gaps forms shafts, and the receiver can give their shadow a wide soft edge.
-        if (clouds && !this.cloudDraws.isEmpty()) {
+        if (clouds && !this.cloudDraws.isEmpty() && !softClouds()) { // soft clouds only go into the cloud map
             if (this.cloudShadowState == 0L) {
                 this.cloudShadowState = this.built(CLOUD_SHADOW_STATE, this::buildCloudShadowState);
             }
@@ -2094,7 +2120,17 @@ public final class MetalShaders {
         long enc = MetalNative.passBegin(frame, new long[]{this.cloudMapTexture()}, new int[]{0}, 1,
             new float[]{1.0F, 1.0F, 1.0F, 1.0F}, 0L, 0, false, 0.0, CLOUD_MAP_SIZE, CLOUD_MAP_SIZE);
         this.cloudBase = Double.NaN;
-        if (!this.cloudDraws.isEmpty()) {
+        if (!this.cloudDraws.isEmpty() && softClouds()) {
+            Minecraft minecraft = Minecraft.getInstance();
+            Vec3 camera = minecraft.gameRenderer.mainCamera().position();
+            this.cloudBase = minecraft.gameRenderer.mainCamera().attributeProbe()
+                .getValue(EnvironmentAttributes.CLOUD_HEIGHT, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
+            // The layer's height above the camera for the map's own vertex shader (the frame sampled later gets it in update).
+            this.renderFrame.set(ValueLayout.JAVA_FLOAT, 348, (float)(this.cloudBase - camera.y));
+            MetalNative.passSetPipeline(enc, this.built(SOFT_CLOUD_MAP_STATE, this::buildSoftCloudMapState), 0L, false, false, 0.0F, 0.0F);
+            MetalNative.passSetBytes(enc, 0, this.renderFrame, FRAME_BYTES, BOTH);
+            MetalNative.passDraw(enc, MetalConst.PRIM_TRIANGLES, 0, 6, 1, 0);
+        } else if (!this.cloudDraws.isEmpty()) {
             if (this.cloudMapState == 0L) {
                 this.cloudMapState = this.built(CLOUD_MAP_STATE, this::buildCloudMapState);
             }
@@ -2576,20 +2612,21 @@ public final class MetalShaders {
         float[] surfaceAmbient = new float[3];
         if (!moon) {
             float noon = (float)Math.sqrt(Math.max(sun.y, 0.0F));
-            surfaceSun[0] = lerp(1.62F, 1.20F, noon);
-            surfaceSun[1] = lerp(0.88F, 1.02F, noon);
-            surfaceSun[2] = lerp(0.42F, 0.70F, noon);
-            surfaceAmbient[0] = lerp(0.62F, 0.50F, noon);
-            surfaceAmbient[1] = lerp(0.58F, 0.63F, noon);
-            surfaceAmbient[2] = lerp(0.70F, 0.86F, noon);
+            surfaceSun[0] = lerp(1.75F, 1.24F, noon);
+            surfaceSun[1] = lerp(0.86F, 1.10F, noon);
+            surfaceSun[2] = lerp(0.36F, 0.88F, noon);
+            surfaceAmbient[0] = lerp(0.68F, 0.60F, noon);
+            surfaceAmbient[1] = lerp(0.56F, 0.66F, noon);
+            surfaceAmbient[2] = lerp(0.76F, 0.80F, noon);
         } else {
             float m = lerp(0.75F, 1.0F, moonLight);
-            surfaceSun[0] = 0.95F * m;
-            surfaceSun[1] = 1.05F * m;
-            surfaceSun[2] = 1.30F * m;
-            surfaceAmbient[0] = 0.44F;
-            surfaceAmbient[1] = 0.49F;
-            surfaceAmbient[2] = 0.60F;
+            // A bright, blue night: the landscape stays readable without a torch, and moonlit faces stand out.
+            surfaceSun[0] = 1.25F * m;
+            surfaceSun[1] = 1.55F * m;
+            surfaceSun[2] = 1.85F * m;
+            surfaceAmbient[0] = 0.78F;
+            surfaceAmbient[1] = 0.98F;
+            surfaceAmbient[2] = 1.22F;
         }
         // Under rain clouds the light is flat and grey: the sun fades (strength) and the sky light loses its blue.
         for (int i = 0; i < 3; i++) {
