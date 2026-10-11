@@ -42,19 +42,25 @@ vertex VOut composite_vertex(uint vid [[vertex_id]], constant FrameData &frame [
     return o;
 }
 
-static float3 grade(float3 c) {
+static float3 grade(float3 c, float night) {
     // Gentle filmic S-curve, a touch of saturation and warmth.
     float3 x = saturate(c); // the S-curve folds values above 1 back down
     // The contrast curve only applies to mid and bright tones; dark tones are left alone so nights stay readable
     // (Complementary lifts its tonemap off dark colours the same way).
     float l0 = dot(x, float3(0.2126, 0.7152, 0.0722));
-    x = mix(x, x * x * (3.0 - 2.0 * x) * 0.2 + x * 0.8, smoothstep(0.05, 0.3, l0));
+    x = mix(x, x * x * (3.0 - 2.0 * x) * 0.3 + x * 0.7, smoothstep(0.05, 0.3, l0));
     float l = dot(x, float3(0.2126, 0.7152, 0.0722));
     // Vivid, not neon: muted colours gain the most, already saturated ones (a clear sky, lava) little.
     float chroma = max(x.r, max(x.g, x.b)) - min(x.r, min(x.g, x.b));
     // Not in the dark either: boosted, the blue of a moonlit night turns purple.
-    x = mix(float3(l), x, 1.0 + 0.18 * (1.0 - chroma) * smoothstep(0.03, 0.22, l));
+    x = mix(float3(l), x, 1.0 + 0.28 * (1.0 - chroma) * smoothstep(0.03, 0.22, l));
     x *= float3(1.015, 1.0, 0.975);
+    // By night colours all but go: what little light there is reads as a cool grey-blue, not as each block's own hue
+    // tinted violet.
+    // (Not what a torch lights: its edge of warm light should stay warm.)
+    // (Nor in the Nether or the End, whose dark is not a night: obsidian keeps its violet.)
+    float dim = night * (1.0 - smoothstep(0.02, 0.22, l)) * saturate(1.0 - 6.0 * max(x.r - x.b, 0.0));
+    x = mix(x, float3(0.84, 0.96, 1.20) * dot(x, float3(0.2126, 0.7152, 0.0722)), 0.7 * dim);
     return saturate(x);
 }
 
@@ -162,7 +168,7 @@ static AirVolume march_air(constant FrameData &frame, depth2d<float> nearMap, de
     float3 ambient = atmosphere_ambient(frame) * 0.35;
     // Far away the air takes on the colour of the sky behind it (aerial perspective): distant hills fade into the
     // pale horizon rather than into a dark blue veil. Nearby, the dimmer fill keeps shafts and shade contrasty.
-    float3 skyBehind = atmosphere_sky(frame, V) * (skyRay ? 0.97 : 0.85);
+    float3 skyBehind = atmosphere_sky(frame, V) * (skyRay ? 0.84 : 0.85);
     // The low sun lights the mist most strongly (golden hour), and keeps doing so until it is at the horizon, but
     // somewhat less than at noon: looking towards it, the haze around the sun would glare.
     float3 direct = frame.sunColor.rgb * frame.sunDir.w * (moon ? 0.5 : 1.65 * (1.0 - 0.2 * frame.airNear.z))
@@ -188,9 +194,13 @@ static AirVolume march_air(constant FrameData &frame, depth2d<float> nearMap, de
         // distance whiting out. It depends on distance along the ray only, so walking does not sway it.
         // (Half of it around sunrise and sunset: with the sun low and ahead, thick mist at the camera glares.)
         density *= 1.0 + frame.airNear.x * (1.0 - 0.5 * frame.airNear.z) * exp(-distance / max(frame.airNear.y, 1.0));
+        // Rain mist gathers with distance: what is within some forty blocks stays clear and dark.
+        density *= mix(1.0, smoothstep(8.0, 56.0, distance), saturate(frame.params.y));
         // A ray into the open sky scatters the sky's own colour all along it: the sky already is the light the air
         // scatters, and the dim fill would lay a grey veil over its blue.
         float3 incident = skyRay ? skyBehind : mix(ambient, skyBehind, smoothstep(48.0, 200.0, distance));
+        // Rain mist is pale: lit from all around by the overcast, a little brighter than the cloud deck behind it.
+        incident = mix(incident, skyBehind * (skyRay ? 1.0 : 1.1), saturate(frame.params.y));
         // A step that scatters next to nothing (thin air high up) is not worth the shadow lookups.
         if (lit && density * width > 1e-4) {
             incident += direct * air_visibility(frame, nearMap, farMap, compare, transmission, farTransmission, cloudMap, p,
@@ -229,13 +239,14 @@ static float3 march_water(constant FrameData &frame, depth2d<float> shadowMap, s
                           texture2d<float> shadowColor, texture2d<float> cloudMap, float3 origin, float3 V, float rayEnd,
                           float dither) {
     float3 extinction = water_extinction(frame);
-    float3 scatter = float3(0.026, 0.043, 0.040) * max(frame.waterParams.w, 0.1);
+    float3 scatter = float3(0.086, 0.054, 0.045) * max(frame.waterParams.w, 0.1);
     float3 L = water_light_direction(frame.sunDir.xyz);
     float phase = water_phase(dot(V, L));
     bool moon = frame.lightParams.z > 0.5;
-    float3 sun = frame.sunColor.rgb * frame.sunDir.w * (moon ? 0.14 : 3.5)
+    float3 sun = frame.sunColor.rgb * frame.sunDir.w * (moon ? 0.14 : 1.1)
                * smoothstep(0.0, 0.2, frame.sunDir.y);
-    float3 ambient = float3(0.25, 0.35, 0.40) * frame.waterParams.z
+    // Looking up, the bright sky shows through the surface.
+    float3 ambient = float3(0.50, 0.60, 0.64) * (1.0 + 1.2 * saturate((V.y - 0.2) * 3.0)) * frame.waterParams.z
                   * mix(0.15, 1.0, frame.lightParams.x);
     float3 sum = float3(0.0);
     const int steps = WATER_STEPS;
@@ -406,6 +417,9 @@ fragment float4 composite_fragment(VOut in [[stage_in]],
         float3 sunShade = shade * mix(1.0, nightSky, 0.6);
         float3 torchShade = float3(1.05, 0.9, 0.7);
         color = color * mix(sunShade, max(sunShade, torchShade), saturate(torch * 1.5));
+        // The light of a dimension without a sky, over the dim cave light the game gave the mob (terrain.metal adds
+        // the same); less where block light already lit it.
+        color *= 1.0 + frame.dimension.rgb * 3.0 * (1.0 - 0.7 * saturate(torch));
         // Mobs and items have no sky-light value here, so a lightning bolt brightens all of them around it.
         if (frame.lightning.w > 0.0) {
             float3 facing = dot(normal, ray.origin - worldPos) < 0.0 ? -normal : normal;
@@ -445,7 +459,9 @@ fragment float4 composite_fragment(VOut in [[stage_in]],
         // Clouds take less of the haze than the ground does: most of the air is below them, and they should stand
         // out white against the sky rather than melt into it.
         bool cloud = !isSky && frame.cameraPos.w > -1.0e8 && worldPos.y > frame.cameraPos.w - 0.5;
-        color = mix(color * saturate(fog.a) + fog.rgb, color, cloud ? 0.6 : 0.0);
+        // (The soft clouds are part of the sky: its alpha says how much cloud there is, see sky_fragment.)
+        float cloudy = cloud ? 1.0 : (isSky ? saturate((1.0 - scene.a) * 2.0) : 0.0);
+        color = mix(color * saturate(fog.a) + fog.rgb, color, 0.6 * cloudy);
         // Aerial perspective: far terrain fades into the colour of the sky behind it, little within a hundred blocks
         // and most of the way at the edge of the render distance, so hills stack up in paler layers. It follows the
         // render distance, and stays out of caves.
@@ -752,24 +768,30 @@ fragment float4 bloom_up_fragment(VOut in [[stage_in]], texture2d<float> source 
     return float4(c / 12.0, 1.0);
 }
 
-static float3 tone(float3 c) {
-    return grade(highlight_rolloff(max(c, 0.0)));
+static float3 tone(float3 c, float night) {
+    c = max(c, 0.0);
+    // Mostly by the brightest channel, which keeps the hue: rolled off channel by channel, the yellow glow around a
+    // low sun and a lit orange cliff would bleach to white. A part of that stays, as very bright light does whiten.
+    float peak = max(c.r, max(c.g, c.b));
+    float3 kept = c * (highlight_rolloff(float3(peak)).r / max(peak, 1e-4));
+    return grade(mix(highlight_rolloff(c), kept, 0.75), night);
 }
 
 // The last pass over the world with shaders on: the floating-point scene, hand included, is tone-mapped, graded and
 // written to the window's 8-bit target before the HUD is drawn. With a render scale below 1 it also does what
 // upscale_fragment does, on the tone-mapped colours (the sharpening expects them within 0 to 1).
 // `glow` is the bloom to add: smooth at this scale, so the neighbours the sharpening reads share this pixel's.
-static float4 final_color(VOut in, texture2d<float> source, float3 glow) {
+static float4 final_color(constant FrameData &frame, VOut in, texture2d<float> source, float3 glow) {
     constexpr sampler lin(filter::linear, address::clamp_to_edge);
-    float3 c = tone(source.sample(lin, in.uv).rgb + glow);
+    float night = frame.dimension.w > 0.5 ? 0.0 : 1.0;
+    float3 c = tone(source.sample(lin, in.uv).rgb + glow, night);
     // Source texels per window pixel: 1 at full scale, where there is nothing to sharpen.
     if (abs(dfdx(in.uv.x)) * float(source.get_width()) < 0.99) {
         float2 texel = 1.0 / float2(source.get_width(), source.get_height());
-        float3 n = tone(source.sample(lin, in.uv + float2(0.0, -texel.y)).rgb + glow);
-        float3 s = tone(source.sample(lin, in.uv + float2(0.0, texel.y)).rgb + glow);
-        float3 w = tone(source.sample(lin, in.uv + float2(-texel.x, 0.0)).rgb + glow);
-        float3 e = tone(source.sample(lin, in.uv + float2(texel.x, 0.0)).rgb + glow);
+        float3 n = tone(source.sample(lin, in.uv + float2(0.0, -texel.y)).rgb + glow, night);
+        float3 s = tone(source.sample(lin, in.uv + float2(0.0, texel.y)).rgb + glow, night);
+        float3 w = tone(source.sample(lin, in.uv + float2(-texel.x, 0.0)).rgb + glow, night);
+        float3 e = tone(source.sample(lin, in.uv + float2(texel.x, 0.0)).rgb + glow, night);
         float3 lo = min(c, min(min(n, s), min(w, e)));
         float3 hi = max(c, max(max(n, s), max(w, e)));
         float3 amount = sqrt(saturate(min(lo, 1.0 - hi) / max(hi, 1e-4)));
@@ -782,14 +804,15 @@ static float4 final_color(VOut in, texture2d<float> source, float3 glow) {
     return float4(c, 1.0);
 }
 
-fragment float4 final_fragment(VOut in [[stage_in]], texture2d<float> source [[texture(0)]], texture2d<float> bloom [[texture(1)]]) {
+fragment float4 final_fragment(VOut in [[stage_in]], constant FrameData &frame [[buffer(0)]], texture2d<float> source [[texture(0)]],
+                               texture2d<float> bloom [[texture(1)]]) {
     constexpr sampler lin(filter::linear, address::clamp_to_edge);
-    return final_color(in, source, bloom.sample(lin, in.uv).rgb * BLOOM_STRENGTH);
+    return final_color(frame, in, source, bloom.sample(lin, in.uv).rgb * BLOOM_STRENGTH);
 }
 
 // -Dciderlight.bloom=false
-fragment float4 final_plain_fragment(VOut in [[stage_in]], texture2d<float> source [[texture(0)]]) {
-    return final_color(in, source, float3(0.0));
+fragment float4 final_plain_fragment(VOut in [[stage_in]], constant FrameData &frame [[buffer(0)]], texture2d<float> source [[texture(0)]]) {
+    return final_color(frame, in, source, float3(0.0));
 }
 
 // --- soft cloud shadows ---
@@ -801,7 +824,7 @@ struct SoftCloudMapOut {
 
 vertex SoftCloudMapOut soft_cloud_map_vertex(uint vid [[vertex_id]], constant FrameData &frame [[buffer(0)]]) {
     const float2 corners[6] = {float2(-1, -1), float2(1, -1), float2(-1, 1), float2(-1, 1), float2(1, -1), float2(1, 1)};
-    float3 fromCamera = float3(corners[vid].x * 2048.0, frame.cameraPos.w + CLOUD_LIFT, corners[vid].y * 2048.0);
+    float3 fromCamera = float3(corners[vid].x * 2048.0, frame.cameraPos.w, corners[vid].y * 2048.0);
     SoftCloudMapOut out;
     out.position = frame.shadowMat * float4(fromCamera + frame.camToAnchor.xyz, 1.0);
     out.position.z = 0.5 * out.position.w; // any distance from the light counts
@@ -810,5 +833,46 @@ vertex SoftCloudMapOut soft_cloud_map_vertex(uint vid [[vertex_id]], constant Fr
 }
 
 fragment float4 soft_cloud_map_fragment(SoftCloudMapOut in [[stage_in]], constant FrameData &frame [[buffer(0)]]) {
-    return float4(mix(1.0, CLOUD_TRANSMISSION_SOFT, cloud_cover(in.world, frame.params.x, frame.params.y)));
+    return float4(mix(1.0, CLOUD_TRANSMISSION_SOFT, cloud_cover(in.world, frame.params.x, frame.params.y).y));
+}
+
+// --- temporal anti-aliasing ---
+// Every frame the main pass is drawn a different fraction of a pixel off (MetalShaders.taaJitter). Each pixel of the
+// lit scene is blended with what was at the same place in the previous result, found through its depth and the
+// previous camera; the history is first held to the range of colours around the pixel now, so what has since moved
+// or changed (a mob, a leaf, the edge of something the camera swung past) drops out instead of trailing.
+constant float TAA_HISTORY = 0.88;
+
+fragment float4 taa_fragment(VOut in [[stage_in]],
+                             constant FrameData &frame [[buffer(0)]],
+                             texture2d<float> scene [[texture(0)]],
+                             depth2d<float> depth [[texture(1)]],
+                             texture2d<float> history [[texture(2)]]) {
+    constexpr sampler lin(filter::linear, address::clamp_to_edge);
+    int2 size = int2(scene.get_width(), scene.get_height());
+    int2 pixel = clamp(int2(in.position.xy), int2(0), size - 1);
+    float3 colour = scene.read(uint2(pixel)).rgb;
+    float3 lowest = colour, highest = colour;
+    for (int y = -1; y <= 1; y++) {
+        for (int x = -1; x <= 1; x++) {
+            if (x == 0 && y == 0) continue;
+            float3 near = scene.read(uint2(clamp(pixel + int2(x, y), int2(0), size - 1))).rgb;
+            lowest = min(lowest, near);
+            highest = max(highest, near);
+        }
+    }
+    float d = depth.read(uint2(pixel));
+    float3 world = reconstruct(frame, in.uv, max(d, 0.01));
+    // The sky has no depth: it is as good as infinitely far, and only turns with the camera.
+    float3 before3 = d > 0.0 ? world + frame.cameraDelta.xyz : normalize(world) * 4096.0;
+    float4 clip = frame.prevViewProj * float4(before3, 1.0);
+    if (clip.w <= 0.0) return float4(colour, 1.0);
+    float2 uv = clip.xy / clip.w * 0.5 + 0.5;
+    if (any(uv <= 0.0) || any(uv >= 1.0)) return float4(colour, 1.0);
+    float3 before = clamp(history.sample(lin, uv).rgb, lowest, highest);
+    // What moves across the screen leans on the history less: the bilinear look-up blurs the history a little every
+    // frame, which walking through foliage smeared into streaks. Some of it stays, to average the viewport's jitter
+    // out while the camera turns.
+    float moved = length((uv - in.uv) * float2(size));
+    return float4(mix(colour, before, mix(TAA_HISTORY, 0.45, smoothstep(0.05, 1.5, moved))), 1.0);
 }

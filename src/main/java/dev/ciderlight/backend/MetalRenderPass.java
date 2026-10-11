@@ -87,6 +87,23 @@ public class MetalRenderPass implements RenderPassBackend {
         this.height = height;
         this.hasDepth = hasDepth;
         this.disableScissor();
+        if (main) {
+            this.applyViewport();
+        }
+    }
+
+    /**
+     * Sets the viewport, the whole target unless one was asked for. The world's main pass gets it a fraction of a
+     * pixel off, different every frame, for the temporal anti-aliasing to average (MetalShaders.taaJitter).
+     */
+    private void applyViewport() {
+        int[] v = this.viewport != null ? this.viewport : new int[]{0, 0, this.width, this.height};
+        if (this.main) {
+            int[] jitter = this.device.shaders().taaJitter();
+            MetalNative.passSetViewportJittered(this.enc, v[0], v[1], v[2], v[3], jitter[0], jitter[1]);
+        } else {
+            MetalNative.passSetViewport(this.enc, v[0], v[1], v[2], v[3]);
+        }
     }
 
     boolean isMain() {
@@ -105,8 +122,8 @@ public class MetalRenderPass implements RenderPassBackend {
         this.appliedPipeline = null;
         this.applyPipeline();
         MetalNative.passSetScissor(this.enc, this.scissorX, this.scissorY, this.scissorW, this.scissorH, this.width, this.height);
-        if (this.viewport != null) {
-            MetalNative.passSetViewport(this.enc, this.viewport[0], this.viewport[1], this.viewport[2], this.viewport[3]);
+        if (this.viewport != null || this.main) {
+            this.applyViewport();
         }
         for (int slot = 0; slot < this.vertexBuffers.length; slot++) {
             if (this.vertexBuffers[slot] != 0L) {
@@ -206,7 +223,7 @@ public class MetalRenderPass implements RenderPassBackend {
     /** NeoForge adds this to RenderPassBackend; with Fabric nothing calls it. */
     public void setViewport(final int x, final int y, final int width, final int height) {
         this.viewport = new int[]{x, y, width, height};
-        MetalNative.passSetViewport(this.enc, x, y, width, height);
+        this.applyViewport();
     }
 
     @Override

@@ -25,7 +25,8 @@ struct FrameData {
     float4 heldLights[8]; // light sources in players' hands, nearest first: xyz relative to the camera, w block-light level (0-1); the list ends at the first 0
     float4 surfaceSun;     // rgb direct sun (or moon) light on surfaces, before shadows and the light's strength
     float4 surfaceAmbient; // rgb sky light on surfaces in shade (blue by day), before sky-light falloff
-    float4 reserved[22];  // unused; keeps the offsets of the fields below
+    float4 dimension;     // rgb: the light that is everywhere in a dimension without a sky, w: 1 the Nether, 2 the End (0 elsewhere)
+    float4 reserved[21];  // unused; keeps the offsets of the fields below
     float4 waterParams;   // x underwater, y local surface relative to camera, z surface sky light, w extinction scale
     float4x4 farShadowMat;
     float4 farCamToAnchor; // xyz camera minus far-map anchor, w valid
@@ -73,7 +74,7 @@ constant float ENTITY_GLOW_ALPHA = 0.985;
 // Strength of torch/block light at a vanilla block-light level (0-1): a warm falloff with a hot core next to the
 // source. Shared by terrain and the entity composite so mobs are lit like the ground around them.
 static float torch_light(float blockL) {
-    return pow(blockL, 1.8) * (0.85 + 0.45 * pow(blockL, 6.0)) * 1.6;
+    return pow(blockL, 1.8) * (0.85 + 0.45 * pow(blockL, 6.0)) * 0.6;
 }
 
 // Block light (0-1) reaching a surface at `worldPos` (camera-relative) facing `normal` from the light sources players

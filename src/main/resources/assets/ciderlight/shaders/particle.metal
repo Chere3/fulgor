@@ -104,7 +104,7 @@ fragment float4 particle_fragment(ParticleOut in [[stage_in]],
     float3 blockTerm = float3(1.0, 0.66, 0.30) * torch_light(blockL);
     float daylight = skyL * skyL * frame.lightParams.x;
     blockTerm *= 1.0 - 0.8 * daylight * (0.6 + 0.4 * dot(direct, float3(0.333)));
-    float3 ambient = floorL * float3(1.0, 1.05, 1.2);
+    float3 ambient = floorL * float3(1.0, 1.05, 1.2) + frame.dimension.rgb;
     float3 light = ambient + sky + blockTerm;
     if (frame.lightning.w > 0.0 && in.light.y > 0.0) {
         float3 towardsCamera = normalize(-in.worldPos);

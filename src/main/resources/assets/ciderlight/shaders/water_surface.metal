@@ -107,7 +107,7 @@ static float water_ggx(float3 n, float3 v, float3 l, float alpha, float f0) {
 static float3 water_absorption(float3 vertexColor) {
     float peak = max(vertexColor.r, max(vertexColor.g, vertexColor.b));
     float3 tint = clamp(vertexColor / max(peak, 1e-4), 0.05, 1.0);
-    return (-log(tint) + float3(0.04, 0.03, 0.05)) * 0.2;
+    return (-log(tint) + float3(0.04, 0.03, 0.05)) * 0.15;
 }
 
 struct WaterFace {

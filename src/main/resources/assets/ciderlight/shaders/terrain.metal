@@ -63,6 +63,7 @@ struct Fog {
 #define SPRITE_FLAME 3  // all flame: fire, campfire fire
 #define SPRITE_GLOW 4   // has a flame in it: torches, lanterns, lit campfire logs
 #define SPRITE_WATER_GLASS 5 // water's side against glass or leaves (vanilla's overlay texture)
+#define SPRITE_LAVA 6   // molten: glows in its own colour
 
 // Which special sprite this atlas texel belongs to (SPRITE_*, 0 for none): one lookup in the sprite map.
 static int sprite_kind(const device uchar *spriteMap, float2 uv) {
@@ -326,13 +327,13 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
     float3 sky = skyAmbient + skyScale * sunLight;
 
     // Block light (torch_light), washed out under direct daylight.
-    float3 blockTerm = float3(1.0, 0.66, 0.30) * torch_light(blockL) * faceShade;
+    float3 blockTerm = float3(1.0, 0.56, 0.20) * torch_light(blockL) * faceShade;
     // Under open daylight block light mostly disappears, as it does outdoors in real life.
     float daylight = skyL * skyL * frame.lightParams.x;
     blockTerm *= 1.0 - 0.8 * daylight * (0.6 + 0.4 * dot(direct, float3(0.333)));
 
     // A little cool ambient so caves and night shadows never go fully black (scales with the brightness option).
-    float3 ambient = floorL * float3(1.0, 1.05, 1.2) * faceShade;
+    float3 ambient = (floorL * float3(1.0, 1.05, 1.2) + frame.dimension.rgb) * faceShade;
     float3 light = ambient + sky + blockTerm;
     // A lightning bolt lights what is open to the sky around it.
     if (frame.lightning.w > 0.0 && in.light.y > 0.0) {
@@ -363,6 +364,15 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
     float3 occludable = ambient + skyAmbient + blockTerm * 0.3;
     // A reflection of the sky is ambient light too: corners and recesses see less of it.
     float aoShare = saturate(dot(albedo.rgb * occludable * diffuseShare + reflected, luma) / max(dot(color.rgb, luma), 1e-5));
+    // The Nether's rock reads as dark grey-brown in its haze, not as red.
+    if (frame.dimension.w > 0.5 && frame.dimension.w < 1.5) {
+        color.rgb = mix(float3(dot(color.rgb, luma)), color.rgb, 0.55);
+    }
+    // Lava is a light source: its own colour, well above 1 so it glows orange rather than taking the torch's red.
+    if (kind == SPRITE_LAVA) {
+        color.rgb = albedo.rgb * 2.7 + float3(0.50, 0.40, 0.34);
+        aoShare = 0.0;
+    }
     // Sunlit sand, snow and pale stone go above 1: roll them off instead of clipping them flat.
 #ifdef ALPHA_CUTOUT
     // Flames are light sources: drawn at full brightness, unshaded, whatever the light around them. Every emitter
@@ -470,12 +480,12 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
             bool endsFirst = (behind.a < 0.002 || layered > 0.5 || behindW > 1e4) && kind != SPRITE_WATER_GLASS;
             th = mix(th, leaving ? 0.0 : (endsFirst ? 2.0 : max(th, 2.0)), side);
             float3 transmittance = exp(-water_absorption(in.color.rgb) * th);
-            float murk = 1.0 - exp(-th * 0.075);
+            float murk = 1.0 - exp(-th * 0.032);
             // Scattered light from deep water: the biome hue pulled towards teal, with only a trace of the vanilla
             // texture's pattern so the surface reads as water rather than as a tiled sprite.
             float texDetail = mix(1.0, dot(texel.rgb, float3(0.3333)) / 0.62, 0.2);
-            float3 deep = sqrt(saturate(in.color.rgb)) * float3(0.13, 0.31, 0.38) * texDetail * light;
-            deep = mix(deep, float3(dot(deep, float3(0.2126, 0.7152, 0.0722))), 0.35); // a grey-blue, not a saturated teal
+            float3 deep = sqrt(saturate(in.color.rgb)) * float3(0.13, 0.36, 0.52) * texDetail * light;
+            deep = mix(deep, float3(dot(deep, float3(0.2126, 0.7152, 0.0722))), 0.15); // a clear turquoise, short of neon
             float3 under = mix(seen * transmittance, deep, murk);
 
             // --- shoreline foam where the water is only a sliver deep ---
@@ -493,6 +503,9 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
                 R = normalize(R + n * (0.03 - rn));
             }
             float3 sky = frame.solarDir.w > 0.5 ? atmosphere_sky(frame, R) : fog.FogColor.rgb;
+#ifdef MC_SOFT_CLOUDS
+            sky = cloud_layer(frame, R, sky);
+#endif
             // Covered water (low sky light) must not mirror a bright sky it cannot see.
             float3 reflColor = mix(deep, sky, smoothstep(0.3, 0.95, skyL));
             // Schlick's curve with a softer exponent than 5: a little more mirror at the shallow angles water is
@@ -551,7 +564,8 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
     if (in.chunkVisibility < 1.0 || f > 0.0) {
         float3 distantFog = frame.solarDir.w > 0.5 ? atmosphere_sky(frame, normalize(in.worldPos)) : fog.FogColor.rgb;
         color = mix(float4(distantFog, fog.FogColor.a * color.a), color, in.chunkVisibility);
-        color.rgb = mix(color.rgb, distantFog, f * fog.FogColor.a);
+        // Lava shines through the haze.
+        color.rgb = mix(color.rgb, distantFog, f * fog.FogColor.a * (kind == SPRITE_LAVA ? 0.3 : 1.0));
     }
     aoShare *= in.chunkVisibility * (1.0 - f * fog.FogColor.a); // fog is not occluded
 #ifdef MC_REFLECT

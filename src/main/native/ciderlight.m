@@ -1300,6 +1300,13 @@ EXPORT void mc_pass_set_viewport(void *encPtr, int x, int y, int w, int h) {
     [BORROW(id<MTLRenderCommandEncoder>, encPtr) setViewport:vp];
 }
 
+// The viewport moved by a fraction of a pixel (in 1/1024ths): everything the pass draws lands that much off, which is
+// how the temporal anti-aliasing jitters the picture without touching any projection matrix.
+EXPORT void mc_pass_set_viewport_jittered(void *encPtr, int x, int y, int w, int h, int jx, int jy) {
+    MTLViewport vp = {(double)x + jx / 1024.0, (double)y + jy / 1024.0, (double)w, (double)h, 0, 1};
+    [BORROW(id<MTLRenderCommandEncoder>, encPtr) setViewport:vp];
+}
+
 EXPORT void mc_pass_set_vertex_buffer(void *encPtr, int slot, void *buf, int64_t offset) {
     [BORROW(id<MTLRenderCommandEncoder>, encPtr) setVertexBuffer:BORROW(id<MTLBuffer>, buf) offset:(NSUInteger)offset
                                                          atIndex:(NSUInteger)(MC_VERTEX_BUFFER_BASE + slot)];

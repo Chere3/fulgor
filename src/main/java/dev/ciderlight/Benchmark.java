@@ -283,7 +283,25 @@ public final class Benchmark {
                     }
                 }
                 String[] commands = list.toArray(String[]::new);
+                // -Dciderlight.benchBiome=<id>: hover over the nearest place of that biome instead (the per-biome
+                // comparison, tools/compare-biomes.sh), twelve blocks above its surface.
+                String biome = System.getProperty("ciderlight.benchBiome");
                 server.execute(() -> {
+                    if (biome != null) {
+                        net.minecraft.server.level.ServerLevel level = server.overworld();
+                        net.minecraft.resources.Identifier id = net.minecraft.resources.Identifier.parse(biome.contains(":") ? biome : "minecraft:" + biome);
+                        var found = level.findClosestBiome3d(holder -> holder.is(id), new net.minecraft.core.BlockPos(0, 80, 0), 6400, 32, 64); // from a fixed place: the same spot every run
+                        if (found == null) {
+                            LOGGER.error("Ciderlight bench: no biome {} within 6400 blocks", id);
+                        } else {
+                            int bx = found.getFirst().getX(), bz = found.getFirst().getZ();
+                            level.getChunk(bx >> 4, bz >> 4);
+                            int top = level.getHeight(net.minecraft.world.level.levelgen.Heightmap.Types.MOTION_BLOCKING, bx, bz);
+                            LOGGER.info("Ciderlight bench: biome {} at {} {} {}", id, bx, top, bz);
+                            commands[6] = "tp @a " + bx + " " + (top + 12) + " " + bz + " " + Integer.getInteger("ciderlight.benchYaw", 135) + " " + Integer.getInteger("ciderlight.benchPitch", 8);
+                            commands[5] = "gamemode spectator @a";
+                        }
+                    }
                     for (String command : commands) {
                         server.getCommands().performPrefixedCommand(server.createCommandSourceStack().withSuppressedOutput(), command);
                     }

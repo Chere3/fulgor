@@ -177,6 +177,8 @@ public final class MetalShaders {
     };
     /** Water's side against glass or leaves: a pool or tank seen through its wall (listed after the glow ones). */
     private static final String[] WATER_GLASS_SPRITES = {"water_overlay"};
+    /** Lava: drawn as a light source in its own colour (listed after the water glass one). */
+    private static final String[] LAVA_SPRITES = {"lava_still", "lava_flow"};
     /** Particle sprites that are all flame or molten: drawn at full brightness like the flames of blocks. */
     private static final String[] FLAME_PARTICLES = {"flame", "soul_fire_flame", "copper_fire_flame", "lava"};
     /** The block of FrameData from airNear up to waterParams; its end (after `reserved` in frame.metal) fixes the later offsets. */
@@ -347,6 +349,17 @@ public final class MetalShaders {
     private final long[] bloomTextures = new long[BLOOM_LEVELS];
     private int bloomWidth;
     private int bloomHeight;
+    /**
+     * Temporal anti-aliasing (taa): the lit scene averaged with what was at the same place in earlier frames, each
+     * drawn a different fraction of a pixel off (taaJitter). The two textures take turns as result and history.
+     */
+    private final long[] taaTextures = new long[2];
+    private int taaIndex;
+    private int taaWidth;
+    private int taaHeight;
+    private boolean taaValid;
+    private long taaState;
+    private final int[] taaJitter = new int[2];
     private long bloomPrefilterState;
     private long bloomDownState;
     private long bloomUpState;
@@ -509,6 +522,9 @@ public final class MetalShaders {
             this.prebuild(AO_FILTER_STATE, this.fullscreen("ao_filter_fragment", AO_FORMAT, AO_FILTER_STATE));
         }
         this.prebuild(UPSCALE_STATE, this.fullscreen(FINAL_FRAGMENT, WINDOW_FORMAT, UPSCALE_STATE));
+        if (TAA) {
+            this.prebuild(TAA_STATE, this.fullscreen("taa_fragment", COLOR_FORMAT, TAA_STATE));
+        }
         if (BLOOM) {
             this.prebuild(BLOOM_PREFILTER_STATE, this.fullscreen("bloom_prefilter_fragment", BLOOM_FORMAT, BLOOM_PREFILTER_STATE));
             this.prebuild(BLOOM_DOWN_STATE, this.fullscreen("bloom_down_fragment", BLOOM_FORMAT, BLOOM_DOWN_STATE));
@@ -565,6 +581,13 @@ public final class MetalShaders {
     private static final String AO_STATE = "Ciderlight ambient occlusion";
     private static final String AO_FILTER_STATE = "Ciderlight ambient occlusion filter";
     private static final String UPSCALE_STATE = "Ciderlight upscale";
+    private static final String TAA_STATE = "Ciderlight temporal anti-aliasing";
+    /** -Dciderlight.taa=false: no temporal anti-aliasing (and no jitter). */
+    private static final boolean TAA = !"false".equals(System.getProperty("ciderlight.taa"));
+    /** Eight sub-pixel offsets (the Halton 2, 3 sequence, centred), in 1/1024ths of a pixel. */
+    private static final int[][] TAA_OFFSETS = {
+        {0, -171}, {-256, 171}, {256, -398}, {-384, -57}, {128, 284}, {-128, -284}, {384, 57}, {-448, 398}
+    };
     private static final String BLOOM_PREFILTER_STATE = "Ciderlight bloom prefilter";
     private static final String BLOOM_DOWN_STATE = "Ciderlight bloom down";
     private static final String BLOOM_UP_STATE = "Ciderlight bloom up";
@@ -583,8 +606,40 @@ public final class MetalShaders {
      * only captured, to know that clouds are on and how high. -Dciderlight.clouds=vanilla keeps the game's.
      */
     private static final boolean SOFT_CLOUDS = !"vanilla".equals(System.getProperty("ciderlight.clouds"));
+    /**
+     * The soft layer sits this far above the game's cloud height, above the build height: seen from a hilltop just
+     * under the game's own height it would stretch into streaks, and nothing built pokes through it.
+     */
+    private static final double SOFT_CLOUD_LIFT = 380.0;
 
-    static boolean softClouds() {
+    /**
+     * The sun's path is tilted off the zenith (as a shader pack's sunPathRotation does), so at noon it still lights
+     * one side of everything and shadows have a direction all day. -Dciderlight.sunTilt=<degrees>, 0 for vanilla's.
+     */
+    private static final float SUN_TILT = (float)Math.toRadians(Float.parseFloat(System.getProperty("ciderlight.sunTilt", "40")));
+
+    /** The tilt in radians, 0 where the sky is the game's own (no shaders, other dimensions). */
+    public static float sunTilt() {
+        return ENABLED && usesAtmosphere() ? SUN_TILT : 0.0F;
+    }
+
+    /** Where a body `angle` along the (tilted) path is: SkyRendererMixin turns the discs the same way. */
+    private static Vector3f onSkyPath(final float angle, final float tilt) {
+        float up = (float)Math.cos(angle);
+        return new Vector3f(-(float)Math.sin(angle), up * (float)Math.cos(tilt), up * (float)Math.sin(tilt));
+    }
+
+    /** Whether the level is the Nether drawn with shaders: no sky light and no sky (AtmosphericFogEnvironmentMixin). */
+    public static boolean netherHaze(final ClientLevel level) {
+        return ENABLED && level != null && !level.dimensionType().hasSkyLight() && level.dimensionType().skybox() == DimensionType.Skybox.NONE;
+    }
+
+    /** Whether the final pass draws the vignette (HudMixin drops the game's own then). */
+    public static boolean softVignette() {
+        return ENABLED;
+    }
+
+    public static boolean softClouds() {
         return ENABLED && SOFT_CLOUDS && usesAtmosphere();
     }
 
@@ -865,9 +920,10 @@ public final class MetalShaders {
         Minecraft minecraft = Minecraft.getInstance();
         float partialTick = minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false);
         float angle = minecraft.gameRenderer.mainCamera().attributeProbe().getValue(EnvironmentAttributes.SUN_ANGLE, partialTick) * (float)Math.PI / 180.0F;
-        this.skyFrame.set(ValueLayout.JAVA_FLOAT, SOLAR_OFFSET, -(float)Math.sin(angle));
-        this.skyFrame.set(ValueLayout.JAVA_FLOAT, SOLAR_OFFSET + 4, (float)Math.cos(angle));
-        this.skyFrame.set(ValueLayout.JAVA_FLOAT, SOLAR_OFFSET + 8, 0.0F);
+        Vector3f solar = onSkyPath(angle, SUN_TILT);
+        this.skyFrame.set(ValueLayout.JAVA_FLOAT, SOLAR_OFFSET, solar.x);
+        this.skyFrame.set(ValueLayout.JAVA_FLOAT, SOLAR_OFFSET + 4, solar.y);
+        this.skyFrame.set(ValueLayout.JAVA_FLOAT, SOLAR_OFFSET + 8, solar.z);
         this.skyFrame.set(ValueLayout.JAVA_FLOAT, SOLAR_OFFSET + 12, 1.0F);
         this.skyFrame.set(ValueLayout.JAVA_FLOAT, 116, minecraft.level.getRainLevel(partialTick));
         this.skyFrame.set(ValueLayout.JAVA_FLOAT, LIGHTNING_OFFSET + 12, this.sampleFrame.get(ValueLayout.JAVA_FLOAT, LIGHTNING_OFFSET + 12));
@@ -878,6 +934,7 @@ public final class MetalShaders {
             this.skyFrame.set(ValueLayout.JAVA_FLOAT, 112, this.sampleFrame.get(ValueLayout.JAVA_FLOAT, 112));
             MemorySegment.copy(this.sampleFrame, 336, this.skyFrame, 336, 32);
             MemorySegment.copy(this.sampleFrame, SURFACE_LIGHT_OFFSET, this.skyFrame, SURFACE_LIGHT_OFFSET, 32);
+            this.skyFrame.set(ValueLayout.JAVA_FLOAT, 448, this.sampleFrame.get(ValueLayout.JAVA_FLOAT, 448)); // frame index
         }
         if (this.skyState == 0L) {
             this.skyState = this.built(SKY_STATE, this::buildSkyState);
@@ -973,6 +1030,9 @@ public final class MetalShaders {
 
     private static String header(final int[] idx, final int kind) {
         StringBuilder b = new StringBuilder();
+        if (SOFT_CLOUDS) {
+            b.append("#define MC_SOFT_CLOUDS 1\n");
+        }
         b.append("#define IDX_GLOBALS ").append(idx[0]).append('\n');
         b.append("#define IDX_PROJECTION ").append(idx[1]).append('\n');
         b.append("#define IDX_TERRAIN ").append(idx[2]).append('\n');
@@ -1073,6 +1133,9 @@ public final class MetalShaders {
         this.inMain = true;
         this.mainColor = colorTexture;
         this.mainDepth = depthTexture;
+        int[] offset = TAA_OFFSETS[this.frameIndex & 7];
+        this.taaJitter[0] = TAA && this.taaValid ? offset[0] : 0;
+        this.taaJitter[1] = TAA && this.taaValid ? offset[1] : 0;
         this.mainWidth = width;
         this.mainHeight = height;
         this.opaqueSnapshotThisFrame = false;
@@ -1240,6 +1303,9 @@ public final class MetalShaders {
             this.ambientOcclusion(frame);
         }
         this.composite(frame);
+        if (TAA) {
+            this.taa(frame);
+        }
         this.aoIndex = 1 - this.aoIndex;
         this.prevViewProj.set(viewProj);
         this.prevCameraPos = cameraPos;
@@ -1459,7 +1525,7 @@ public final class MetalShaders {
     }
 
     /** Sprite materials in the high four bits of a sprite-map byte (SPRITE_* in terrain.metal). */
-    private static final String[][] MATERIAL_SPRITES = {SHINY_SPRITES, ICE_SPRITES, FLAME_SPRITES, GLOW_SPRITES, WATER_GLASS_SPRITES};
+    private static final String[][] MATERIAL_SPRITES = {SHINY_SPRITES, ICE_SPRITES, FLAME_SPRITES, GLOW_SPRITES, WATER_GLASS_SPRITES, LAVA_SPRITES};
 
     /**
      * Builds the sprite map from the block registry and the loaded block models; cheap when nothing changed. Each
@@ -1727,6 +1793,7 @@ public final class MetalShaders {
     private void invalidateHistory() {
         this.shadowHistoryValid = false;
         this.volumetricHistory = false;
+        this.taaValid = false;
     }
 
     /** The shadow maps describe another world: don't sample them until they are rendered again. */
@@ -1952,6 +2019,52 @@ public final class MetalShaders {
         MetalNative.passEnd(enc);
     }
 
+    /** This frame's sub-pixel offset of the main pass's viewport, in 1/1024ths of a pixel (0, 0 without TAA). */
+    int[] taaJitter() {
+        return this.taaJitter;
+    }
+
+    /**
+     * Temporal anti-aliasing: blends the composited scene with the previous result, found through each pixel's depth
+     * and the previous camera, and copies the blend back into the main target (the hand is drawn over it afterwards).
+     */
+    private void taa(final long frame) {
+        if (this.taaWidth != this.mainWidth || this.taaHeight != this.mainHeight) {
+            for (int i = 0; i < 2; i++) {
+                long old = this.taaTextures[i];
+                if (old != 0L) {
+                    this.device.encoder().queueForDestroy(() -> MetalNative.release(old));
+                }
+                this.taaTextures[i] = MetalNative.textureCreate(this.device.context(), COLOR_FORMAT, this.mainWidth, this.mainHeight, 1, 1, 1 | 4 | 8);
+                MetalNative.setLabel(this.taaTextures[i], "Ciderlight TAA " + i);
+            }
+            this.taaWidth = this.mainWidth;
+            this.taaHeight = this.mainHeight;
+            this.taaValid = false;
+        }
+        long result = this.taaTextures[this.taaIndex];
+        if (!this.taaValid) {
+            // Nothing to blend with yet (the first frame, a new size, a cut): this frame becomes the history.
+            MetalNative.blitTextureToTexture(frame, this.mainColor, result, 0, 0, 0, 0, 0, this.mainWidth, this.mainHeight);
+        } else {
+            if (this.taaState == 0L) {
+                this.taaState = this.fullscreenState("taa_fragment", COLOR_FORMAT, TAA_STATE);
+            }
+            MetalNative.profileLabel("taa");
+            long enc = MetalNative.passBeginOverwrite(frame, new long[]{result}, this.mainWidth, this.mainHeight);
+            MetalNative.passSetPipeline(enc, this.taaState, 0L, false, false, 0.0F, 0.0F);
+            MetalNative.passSetBytes(enc, 0, this.sampleFrame, FRAME_BYTES, BOTH);
+            MetalNative.passSetTexture(enc, 0, this.mainColor, 0L, MetalConst.STAGE_FRAGMENT);
+            MetalNative.passSetTexture(enc, 1, this.mainDepth, 0L, MetalConst.STAGE_FRAGMENT);
+            MetalNative.passSetTexture(enc, 2, this.taaTextures[1 - this.taaIndex], 0L, MetalConst.STAGE_FRAGMENT);
+            MetalNative.passDraw(enc, MetalConst.PRIM_TRIANGLES, 0, 3, 1, 0);
+            MetalNative.passEnd(enc);
+            MetalNative.blitTextureToTexture(frame, result, this.mainColor, 0, 0, 0, 0, 0, this.mainWidth, this.mainHeight);
+        }
+        this.taaValid = true;
+        this.taaIndex = 1 - this.taaIndex;
+    }
+
     /**
      * The glow around bright things: what exceeds the bloom threshold is halved in size BLOOM_LEVELS times, each
      * level a little blurrier, then added back level by level so the largest one holds the sum for final_fragment.
@@ -2123,7 +2236,7 @@ public final class MetalShaders {
         if (!this.cloudDraws.isEmpty() && softClouds()) {
             Minecraft minecraft = Minecraft.getInstance();
             Vec3 camera = minecraft.gameRenderer.mainCamera().position();
-            this.cloudBase = minecraft.gameRenderer.mainCamera().attributeProbe()
+            this.cloudBase = SOFT_CLOUD_LIFT + minecraft.gameRenderer.mainCamera().attributeProbe()
                 .getValue(EnvironmentAttributes.CLOUD_HEIGHT, minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false));
             // The layer's height above the camera for the map's own vertex shader (the frame sampled later gets it in update).
             this.renderFrame.set(ValueLayout.JAVA_FLOAT, 348, (float)(this.cloudBase - camera.y));
@@ -2507,9 +2620,10 @@ public final class MetalShaders {
             float degToRad = (float)Math.PI / 180.0F;
             // Same rotation the sky renderer applies to the sun and moon quads: Y by -90 degrees, then X by the angle.
             float sunAngle = probe.getValue(EnvironmentAttributes.SUN_ANGLE, partialTick) * degToRad;
-            sun.set(-(float)Math.sin(sunAngle), (float)Math.cos(sunAngle), 0.0F).normalize();
+            float tilt = atmosphere ? SUN_TILT : 0.0F;
+            sun.set(onSkyPath(sunAngle, tilt));
             float moonAngle = probe.getValue(EnvironmentAttributes.MOON_ANGLE, partialTick) * degToRad;
-            Vector3f moonDir = new Vector3f(-(float)Math.sin(moonAngle), (float)Math.cos(moonAngle), 0.0F).normalize();
+            Vector3f moonDir = onSkyPath(moonAngle, tilt);
             MoonPhase phase = probe.getValue(EnvironmentAttributes.MOON_PHASE, partialTick);
             moonLight = DimensionType.MOON_BRIGHTNESS_PER_PHASE[phase.index() % DimensionType.MOON_BRIGHTNESS_PER_PHASE.length];
             rain = level.getRainLevel(partialTick);
@@ -2561,7 +2675,7 @@ public final class MetalShaders {
             surfaceSky = level.getLightEngine().getLayerListener(LightLayer.SKY).getLightValue(pos) / 15.0F;
             float partialTick = minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(false);
             float waterRange = camera.attributeProbe().getValue(EnvironmentAttributes.WATER_FOG_END_DISTANCE, partialTick);
-            waterDensity = Math.clamp(96.0F / Math.max(waterRange, 1.0F), 0.5F, 3.0F);
+            waterDensity = Math.clamp(96.0F / Math.max(waterRange, 1.0F), 0.5F, 3.0F) * 0.7F;
             if (camera.entity() instanceof LivingEntity living && living.hasEffect(MobEffects.NIGHT_VISION)) waterDensity *= 0.6F;
         }
         this.sunActive = strength > 0.0F;
@@ -2610,27 +2724,38 @@ public final class MetalShaders {
         // strongly orange and the shade around it more violet. At night the moon is a cool, dim key over a blue fill.
         float[] surfaceSun = new float[3];
         float[] surfaceAmbient = new float[3];
+        // Dimensions without a sky have a light of their own, as in the reference: the End is evenly and brightly lit
+        // (pale end stone, violet obsidian), the Nether only a little, and warmly. w tells the shaders which it is.
+        float[] dimensionLight = new float[4];
+        boolean end = level != null && level.dimensionType().skybox() == DimensionType.Skybox.END;
+        if (ENABLED && (end || netherHaze(level))) {
+            dimensionLight[0] = end ? 0.80F : 0.20F;
+            dimensionLight[1] = end ? 0.71F : 0.17F;
+            dimensionLight[2] = end ? 0.92F : 0.16F;
+            dimensionLight[3] = end ? 2.0F : 1.0F;
+        }
         if (!moon) {
             float noon = (float)Math.sqrt(Math.max(sun.y, 0.0F));
-            surfaceSun[0] = lerp(1.75F, 1.24F, noon);
-            surfaceSun[1] = lerp(0.86F, 1.10F, noon);
-            surfaceSun[2] = lerp(0.36F, 0.88F, noon);
-            surfaceAmbient[0] = lerp(0.68F, 0.60F, noon);
-            surfaceAmbient[1] = lerp(0.56F, 0.66F, noon);
+            surfaceSun[0] = lerp(1.75F, 1.54F, noon);
+            surfaceSun[1] = lerp(0.86F, 1.33F, noon);
+            surfaceSun[2] = lerp(0.36F, 1.04F, noon);
+            surfaceAmbient[0] = lerp(0.68F, 0.56F, noon);
+            surfaceAmbient[1] = lerp(0.56F, 0.62F, noon);
             surfaceAmbient[2] = lerp(0.76F, 0.80F, noon);
         } else {
             float m = lerp(0.75F, 1.0F, moonLight);
-            // A bright, blue night: the landscape stays readable without a torch, and moonlit faces stand out.
-            surfaceSun[0] = 1.25F * m;
-            surfaceSun[1] = 1.55F * m;
-            surfaceSun[2] = 1.85F * m;
-            surfaceAmbient[0] = 0.78F;
-            surfaceAmbient[1] = 0.98F;
-            surfaceAmbient[2] = 1.22F;
+            // A dark night, as in the reference: shapes are readable against the sky, and torchlight owns what it reaches.
+            // (The game's own night light map already tints sky light blue; more blue here turns stone violet.)
+            surfaceSun[0] = 0.55F * m;
+            surfaceSun[1] = 0.62F * m;
+            surfaceSun[2] = 0.72F * m;
+            surfaceAmbient[0] = 0.28F;
+            surfaceAmbient[1] = 0.31F;
+            surfaceAmbient[2] = 0.33F;
         }
         // Under rain clouds the light is flat and grey: the sun fades (strength) and the sky light loses its blue.
         for (int i = 0; i < 3; i++) {
-            surfaceAmbient[i] = lerp(surfaceAmbient[i], 0.62F, rain);
+            surfaceAmbient[i] = lerp(surfaceAmbient[i], 0.19F - 0.02F * i, rain);
         }
 
         // Shadow volume centred on the camera, snapped to whole shadow-map texels in the light's view so shadow edges
@@ -2687,7 +2812,7 @@ public final class MetalShaders {
             seg.set(ValueLayout.JAVA_FLOAT, 364, moonLight);
             // fogParams: sky light at the camera, render distance (filled in at the end of the pass), haze density, unused.
             seg.set(ValueLayout.JAVA_FLOAT, 368, this.eyeSky);
-            seg.set(ValueLayout.JAVA_FLOAT, 376, 1.0F + rain * 1.5F);
+            seg.set(ValueLayout.JAVA_FLOAT, 376, 1.0F + rain * 5.0F);
             seg.set(ValueLayout.JAVA_FLOAT, WATER_OFFSET, underwater ? 1.0F : 0.0F);
             seg.set(ValueLayout.JAVA_FLOAT, WATER_OFFSET + 4, (float)(waterSurface - cameraPos.y));
             seg.set(ValueLayout.JAVA_FLOAT, WATER_OFFSET + 8, this.waterSky);
@@ -2695,6 +2820,9 @@ public final class MetalShaders {
             for (int i = 0; i < 3; i++) {
                 seg.set(ValueLayout.JAVA_FLOAT, SURFACE_LIGHT_OFFSET + i * 4, surfaceSun[i]);
                 seg.set(ValueLayout.JAVA_FLOAT, SURFACE_LIGHT_OFFSET + 16 + i * 4, surfaceAmbient[i]);
+            }
+            for (int i = 0; i < 4; i++) {
+                seg.set(ValueLayout.JAVA_FLOAT, SURFACE_LIGHT_OFFSET + 32 + i * 4, dimensionLight[i]);
             }
         }
         // cameraPos.w: the cloud base above the camera; with no clouds in the map nothing is under them.
@@ -2868,6 +2996,8 @@ public final class MetalShaders {
         for (long bloom : this.bloomTextures) {
             handles.add(bloom);
         }
+        handles.add(this.taaTextures[0]);
+        handles.add(this.taaTextures[1]);
         for (long handle : handles) {
             if (handle != 0L) {
                 MetalNative.release(handle);
