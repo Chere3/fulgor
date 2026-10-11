@@ -111,5 +111,5 @@ fragment float4 particle_fragment(ParticleOut in [[stage_in]],
         light += (lightning_light(frame, in.worldPos, towardsCamera) + lightning_sky_light(frame)) * smoothstep(0.2, 0.9, skyL);
     }
     // Alpha is replaced by the block-light marker pass (MetalShaders.markEntityLight): 0, already lit.
-    return float4(highlight_rolloff(albedo.rgb * light), albedo.a);
+    return float4(albedo.rgb * light, albedo.a);
 }

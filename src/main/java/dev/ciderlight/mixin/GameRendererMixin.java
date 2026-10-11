@@ -54,7 +54,7 @@ public class GameRendererMixin {
 
     @Inject(method = "resize", at = @At("RETURN"))
     private void ciderlight$resizeWorld(final int width, final int height, final CallbackInfo ci) {
-        if (RenderScale.scale() < 1.0F) {
+        if (RenderScale.separate()) {
             this.ciderlight$sizeWorld(width, height);
         }
     }
@@ -64,7 +64,7 @@ public class GameRendererMixin {
         if (this.ciderlight$swapped) {
             this.ciderlight$swap(); // a frame that failed half way left them swapped
         }
-        if (RenderScale.scale() >= 1.0F) {
+        if (!RenderScale.separate()) {
             return;
         }
         RenderTarget world = this.ciderlight$world;
@@ -90,10 +90,15 @@ public class GameRendererMixin {
     private void ciderlight$sizeWorld(final int width, final int height) {
         int w = RenderScale.scaled(width);
         int h = RenderScale.scaled(height);
-        if (this.ciderlight$world == null) {
-            this.ciderlight$world = new TextureTarget("Main (world)", w, h, GpuFormat.RGBA8_UNORM, GpuFormat.D32_FLOAT);
-        } else {
-            this.ciderlight$world.resize(w, h);
+        RenderScale.creatingWorldTarget = true;
+        try {
+            if (this.ciderlight$world == null) {
+                this.ciderlight$world = new TextureTarget("Main (world)", w, h, GpuFormat.RGBA8_UNORM, GpuFormat.D32_FLOAT);
+            } else {
+                this.ciderlight$world.resize(w, h);
+            }
+        } finally {
+            RenderScale.creatingWorldTarget = false;
         }
         this.hud3DTarget.resize(w, h);
         this.minecraft.levelRenderer.resize(w, h);

@@ -7,6 +7,11 @@ import com.mojang.renderpearl.backend.common.BaseGpuTexture;
 public class MetalTexture extends BaseGpuTexture implements Destroyable {
     private final MetalDevice device;
     private final long handle;
+    /**
+     * The world's colour target with shaders on (RenderScale.hdr): floating-point in Metal, while the game is told
+     * the 8-bit format it asked for, which its render passes check pipelines against.
+     */
+    private final boolean hdr;
     private boolean closed;
     private int views;
 
@@ -19,7 +24,8 @@ public class MetalTexture extends BaseGpuTexture implements Destroyable {
         if (!MetalConst.isTextureFormatSupported(format)) {
             throw new IllegalArgumentException("Metal has no texture format equivalent to " + format);
         }
-        this.handle = MetalNative.textureCreate(device.context(), MetalConst.format(format), width, height, depthOrLayers, mipLevels, usage);
+        this.hdr = MetalShaders.ENABLED && format == GpuFormat.RGBA8_UNORM && RenderScale.creatingWorldTarget;
+        this.handle = MetalNative.textureCreate(device.context(), MetalConst.format(this.hdr ? GpuFormat.RGBA16_FLOAT : format), width, height, depthOrLayers, mipLevels, usage);
         if (this.handle == 0L) {
             throw new IllegalStateException("Failed to create " + width + "x" + height + " " + format + " texture '" + label + "'");
         }
@@ -31,6 +37,10 @@ public class MetalTexture extends BaseGpuTexture implements Destroyable {
 
     public long handle() {
         return this.handle;
+    }
+
+    boolean hdr() {
+        return this.hdr;
     }
 
     @Override

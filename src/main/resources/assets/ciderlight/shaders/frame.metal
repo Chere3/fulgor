@@ -50,8 +50,9 @@ static float sky_face_shade(float3 n) {
     return (0.775 + 0.225 * n.y) * (1.0 + 0.04 * abs(n.z) - 0.04 * abs(n.x));
 }
 
-// Lit colours above 1 (sunlit snow, sand, pale stone) would clip flat in the 8-bit scene: below KNEE they are kept,
-// above it they approach 1 smoothly, with the same slope at the knee.
+// Lit colours above 1 (sunlit snow, sand, pale stone) would clip flat on screen: below KNEE they are kept, above it
+// they approach 1 smoothly, with the same slope at the knee. The world target is floating-point, so surfaces write
+// their colours as they are and the final pass (final_fragment) applies this once, to the whole picture.
 static float3 highlight_rolloff(float3 c) {
     const float knee = 0.68;
     float3 over = max(c - knee, 0.0);
@@ -66,7 +67,7 @@ static float encode_entity_light(float blockLight) {
 // Between the block-light range and 1: a flame particle, which is a light source itself (see entity_emissive).
 constant float ENTITY_EMISSIVE_ALPHA = 0.975;
 // Glowing eyes (endermen, spiders, phantoms): unshaded like flames, but kept at their own colour, not brightened.
-// Two 8-bit steps above the flames' mark (the scene's alpha is 8 bits).
+// A step above the flames' mark that also survived the 8-bit alpha the scene used to have (it is 16-bit float now).
 constant float ENTITY_GLOW_ALPHA = 0.985;
 
 // Strength of torch/block light at a vanilla block-light level (0-1): a warm falloff with a hot core next to the

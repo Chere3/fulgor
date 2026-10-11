@@ -24,6 +24,7 @@ public final class Benchmark {
     private static final int SETTLE_TICKS = 100;
     private static final int SCENE_X = 5000;
     private static final int SCENE_Z = 5000;
+    private static final long BENCH_SEED = 20261011L;
     private static final long WARMUP_NS = 10_000_000_000L;
 
     private static int ticksInWorld;
@@ -90,7 +91,10 @@ public final class Benchmark {
     public static void onTick(final Minecraft minecraft) {
         // -Dciderlight.benchFlatWorld=<name>: from the title screen, open that save, creating it first as a creative
         // superflat world (no water, no structures) if it does not exist yet.
-        String flatWorld = System.getProperty("ciderlight.benchFlatWorld");
+        // -Dciderlight.benchWorld=<name>: the same, but a normal world with a fixed seed, so every machine measures
+        // the same terrain.
+        String normalWorld = System.getProperty("ciderlight.benchWorld");
+        String flatWorld = normalWorld != null ? normalWorld : System.getProperty("ciderlight.benchFlatWorld");
         if (flatWorld != null && !flatWorldOpened && minecraft.level == null
             && minecraft.gui.screen() instanceof net.minecraft.client.gui.screens.TitleScreen) {
             flatWorldOpened = true;
@@ -104,8 +108,12 @@ public final class Benchmark {
                         new net.minecraft.world.level.LevelSettings.DifficultySettings(net.minecraft.world.Difficulty.PEACEFUL, false, false),
                         true, net.minecraft.world.level.WorldDataConfiguration.DEFAULT
                     ),
-                    net.minecraft.world.level.levelgen.WorldOptions.defaultWithRandomSeed().withStructures(false),
-                    net.minecraft.world.level.levelgen.presets.WorldPresets::createTestWorldDimensions,
+                    normalWorld != null
+                        ? new net.minecraft.world.level.levelgen.WorldOptions(BENCH_SEED, true, false)
+                        : net.minecraft.world.level.levelgen.WorldOptions.defaultWithRandomSeed().withStructures(false),
+                    normalWorld != null
+                        ? net.minecraft.world.level.levelgen.presets.WorldPresets::createNormalWorldDimensions
+                        : net.minecraft.world.level.levelgen.presets.WorldPresets::createTestWorldDimensions,
                     new net.minecraft.client.gui.screens.TitleScreen()
                 );
             }

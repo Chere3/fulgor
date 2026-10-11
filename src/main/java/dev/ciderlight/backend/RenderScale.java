@@ -16,6 +16,25 @@ public final class RenderScale {
         return device == null ? 1.0F : device.shaders().renderScale();
     }
 
+    /**
+     * Set by GameRendererMixin while it creates or resizes the world's own render target, on the render thread:
+     * MetalTexture recognises that target's colour texture by it (labels only reach the backend when debugging).
+     */
+    public static boolean creatingWorldTarget;
+
+    /**
+     * With shaders on the world is drawn into a floating-point target of its own, at any scale, so lit colours can
+     * exceed 1 until the final pass (MetalShaders.upscale) tone-maps them into the window's 8-bit target.
+     */
+    public static boolean hdr() {
+        return MetalDevice.current != null && MetalShaders.ENABLED;
+    }
+
+    /** Whether the world is drawn into a target of its own, not the window's. */
+    public static boolean separate() {
+        return hdr() || scale() < 1.0F;
+    }
+
     public static int scaled(final int size) {
         return Math.max(1, Math.round(size * scale()));
     }

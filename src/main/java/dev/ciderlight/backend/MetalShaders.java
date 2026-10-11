@@ -195,7 +195,10 @@ public final class MetalShaders {
         "iron_door_bottom", "lightning_rod", "lightning_rod_on", "copper_bulb", "copper_grate", "copper_trapdoor", "copper_door_top", "copper_door_bottom"
     };
     private static final int DEPTH_FORMAT = MetalConst.format(GpuFormat.D32_FLOAT);
-    private static final int COLOR_FORMAT = MetalConst.format(GpuFormat.RGBA8_UNORM);
+    /** The world target's format (RenderScale.hdr): lit colours above 1 are kept until the final pass. */
+    private static final int COLOR_FORMAT = MetalConst.format(GpuFormat.RGBA16_FLOAT);
+    /** The window-sized main target the final pass writes and the HUD is drawn on. */
+    private static final int WINDOW_FORMAT = MetalConst.format(GpuFormat.RGBA8_UNORM);
     private static final int TRANSMISSION_FORMAT = MetalConst.format(GpuFormat.RGBA16_UNORM);
     private static final int SHADOW_HISTORY_FORMAT = MetalConst.format(GpuFormat.RGBA16_FLOAT);
     private static final int VOLUMETRIC_FORMAT = MetalConst.format(GpuFormat.RGBA16_FLOAT);
@@ -340,6 +343,13 @@ public final class MetalShaders {
     private long shadowDepthState;
     private long compositeState;
     private long upscaleState;
+    /** Bloom (bloom): the bright parts of the scene at a quarter size, then halved; level 0 ends up holding their sum. */
+    private final long[] bloomTextures = new long[BLOOM_LEVELS];
+    private int bloomWidth;
+    private int bloomHeight;
+    private long bloomPrefilterState;
+    private long bloomDownState;
+    private long bloomUpState;
     private long shadowHistoryState;
     /** Shadow history of what lies behind translucent terrain (the opaque depth): the ground under water and glass. */
     private final long[] shadowHistoryTextures = new long[2];
@@ -498,8 +508,11 @@ public final class MetalShaders {
             this.prebuild(AO_STATE, this.fullscreen("ao_fragment", AO_FORMAT, AO_STATE));
             this.prebuild(AO_FILTER_STATE, this.fullscreen("ao_filter_fragment", AO_FORMAT, AO_FILTER_STATE));
         }
-        if (this.quality.renderScale < 1.0F) {
-            this.prebuild(UPSCALE_STATE, this.fullscreen("upscale_fragment", COLOR_FORMAT, UPSCALE_STATE));
+        this.prebuild(UPSCALE_STATE, this.fullscreen(FINAL_FRAGMENT, WINDOW_FORMAT, UPSCALE_STATE));
+        if (BLOOM) {
+            this.prebuild(BLOOM_PREFILTER_STATE, this.fullscreen("bloom_prefilter_fragment", BLOOM_FORMAT, BLOOM_PREFILTER_STATE));
+            this.prebuild(BLOOM_DOWN_STATE, this.fullscreen("bloom_down_fragment", BLOOM_FORMAT, BLOOM_DOWN_STATE));
+            this.prebuild(BLOOM_UP_STATE, this::buildBloomUpState);
         }
         this.prebuild(COMPOSITE_STATE, this.fullscreen("composite_fragment", COLOR_FORMAT, COMPOSITE_STATE));
         this.prebuild(CLOUD_SHADOW_STATE, this::buildCloudShadowState);
@@ -552,6 +565,15 @@ public final class MetalShaders {
     private static final String AO_STATE = "Ciderlight ambient occlusion";
     private static final String AO_FILTER_STATE = "Ciderlight ambient occlusion filter";
     private static final String UPSCALE_STATE = "Ciderlight upscale";
+    private static final String BLOOM_PREFILTER_STATE = "Ciderlight bloom prefilter";
+    private static final String BLOOM_DOWN_STATE = "Ciderlight bloom down";
+    private static final String BLOOM_UP_STATE = "Ciderlight bloom up";
+    /** -Dciderlight.bloom=false: no glow around bright things (and none of its passes). */
+    private static final boolean BLOOM = !"false".equals(System.getProperty("ciderlight.bloom"));
+    private static final int BLOOM_LEVELS = 4;
+    private static final int BLOOM_FORMAT = MetalConst.format(GpuFormat.RG11B10_FLOAT);
+    /** With shaders on the final pass also tone-maps and grades the floating-point world; without, it only stretches it. */
+    private static final String FINAL_FRAGMENT = !ENABLED ? "upscale_fragment" : BLOOM ? "final_fragment" : "final_plain_fragment";
     private static final String COMPOSITE_STATE = "Ciderlight composite";
     private static final String CLOUD_SHADOW_STATE = "Ciderlight cloud shadow";
     private static final String CLOUD_MAP_STATE = "Ciderlight cloud shadow map";
@@ -609,6 +631,15 @@ public final class MetalShaders {
         long library = this.built(SKY_LIBRARY, () -> MetalNative.libraryCreate(this.device.context(), loadSource("sky.metal")));
         int[] desc = {0, 0, 1, COLOR_FORMAT, 15, 0, 0, 0, 0, 0, 0, 0, DEPTH_FORMAT, MetalConst.PRIM_TRIANGLES};
         return MetalNative.pipelineCreate(this.device.context(), library, "sky_vertex", library, "sky_fragment", desc, SKY_STATE);
+    }
+
+    /** The bloom's way back up: each level is added onto the larger one above it. */
+    private long buildBloomUpState() {
+        long library = this.compositeLibrary();
+        int one = BlendFactor.ONE.ordinal();
+        int add = BlendOp.ADD.ordinal();
+        int[] desc = {0, 0, 1, BLOOM_FORMAT, 15, 1, one, one, add, one, one, add, -1, MetalConst.PRIM_TRIANGLES};
+        return MetalNative.pipelineCreate(this.device.context(), library, "composite_vertex", library, "bloom_up_fragment", desc, BLOOM_UP_STATE);
     }
 
     /** A full-screen pass of composite.metal drawing into a single target of `format`, without blending. */
@@ -1877,15 +1908,66 @@ public final class MetalShaders {
      */
     void upscale(final long frame, final long source, final long target, final int width, final int height) {
         if (this.upscaleState == 0L) {
-            this.upscaleState = this.fullscreenState("upscale_fragment", COLOR_FORMAT, UPSCALE_STATE);
+            this.upscaleState = this.fullscreenState(FINAL_FRAGMENT, WINDOW_FORMAT, UPSCALE_STATE);
+        }
+        boolean bloom = ENABLED && BLOOM;
+        if (bloom) {
+            this.bloom(frame, source);
         }
         MetalNative.profileLabel("upscale");
         long enc = MetalNative.passBeginOverwrite(frame, new long[]{target}, width, height);
         MetalNative.passSetPipeline(enc, this.upscaleState, 0L, false, false, 0.0F, 0.0F);
         MetalNative.passSetBytes(enc, 0, this.sampleFrame, FRAME_BYTES, BOTH);
         MetalNative.passSetTexture(enc, 0, source, 0L, MetalConst.STAGE_FRAGMENT);
+        if (bloom) {
+            MetalNative.passSetTexture(enc, 1, this.bloomTextures[0], 0L, MetalConst.STAGE_FRAGMENT);
+        }
         MetalNative.passDraw(enc, MetalConst.PRIM_TRIANGLES, 0, 3, 1, 0);
         MetalNative.passEnd(enc);
+    }
+
+    /**
+     * The glow around bright things: what exceeds the bloom threshold is halved in size BLOOM_LEVELS times, each
+     * level a little blurrier, then added back level by level so the largest one holds the sum for final_fragment.
+     */
+    private void bloom(final long frame, final long source) {
+        // From a quarter of the world's size: the glow has no detail to lose, and every pass costs a quarter as much.
+        int width = Math.max(1, this.mainWidth / 4);
+        int height = Math.max(1, this.mainHeight / 4);
+        if (this.bloomWidth != width || this.bloomHeight != height) {
+            for (int i = 0; i < BLOOM_LEVELS; i++) {
+                long old = this.bloomTextures[i];
+                if (old != 0L) {
+                    this.device.encoder().queueForDestroy(() -> MetalNative.release(old));
+                }
+                this.bloomTextures[i] = MetalNative.textureCreate(this.device.context(), BLOOM_FORMAT, Math.max(1, width >> i), Math.max(1, height >> i), 1, 1, 4 | 8);
+                MetalNative.setLabel(this.bloomTextures[i], "Ciderlight bloom " + i);
+            }
+            this.bloomWidth = width;
+            this.bloomHeight = height;
+        }
+        if (this.bloomUpState == 0L) {
+            this.bloomPrefilterState = this.fullscreenState("bloom_prefilter_fragment", BLOOM_FORMAT, BLOOM_PREFILTER_STATE);
+            this.bloomDownState = this.fullscreenState("bloom_down_fragment", BLOOM_FORMAT, BLOOM_DOWN_STATE);
+            this.bloomUpState = this.built(BLOOM_UP_STATE, this::buildBloomUpState);
+        }
+        MetalNative.profileLabel("bloom");
+        for (int i = 0; i < BLOOM_LEVELS; i++) {
+            long enc = MetalNative.passBeginOverwrite(frame, new long[]{this.bloomTextures[i]}, Math.max(1, width >> i), Math.max(1, height >> i));
+            MetalNative.passSetPipeline(enc, i == 0 ? this.bloomPrefilterState : this.bloomDownState, 0L, false, false, 0.0F, 0.0F);
+            MetalNative.passSetBytes(enc, 0, this.sampleFrame, FRAME_BYTES, BOTH);
+            MetalNative.passSetTexture(enc, 0, i == 0 ? source : this.bloomTextures[i - 1], 0L, MetalConst.STAGE_FRAGMENT);
+            MetalNative.passDraw(enc, MetalConst.PRIM_TRIANGLES, 0, 3, 1, 0);
+            MetalNative.passEnd(enc);
+        }
+        for (int i = BLOOM_LEVELS - 2; i >= 0; i--) {
+            long enc = MetalNative.passBegin(frame, new long[]{this.bloomTextures[i]}, new int[]{0}, 0, new float[4], 0L, 0, false, 0.0, Math.max(1, width >> i), Math.max(1, height >> i));
+            MetalNative.passSetPipeline(enc, this.bloomUpState, 0L, false, false, 0.0F, 0.0F);
+            MetalNative.passSetBytes(enc, 0, this.sampleFrame, FRAME_BYTES, BOTH);
+            MetalNative.passSetTexture(enc, 0, this.bloomTextures[i + 1], 0L, MetalConst.STAGE_FRAGMENT);
+            MetalNative.passDraw(enc, MetalConst.PRIM_TRIANGLES, 0, 3, 1, 0);
+            MetalNative.passEnd(enc);
+        }
     }
 
     private void composite(final long frame) {
@@ -2746,6 +2828,9 @@ public final class MetalShaders {
             this.translucentShadowHistoryTextures[0], this.translucentShadowHistoryTextures[1],
             this.foliageBuffer, this.cloudMapTexture, this.frameConstantsTexture, this.lightningShadowTexture, this.handSpriteBuffer, this.airNoiseTexture,
             this.aoRawTexture, this.aoTextures[0], this.aoTextures[1]));
+        for (long bloom : this.bloomTextures) {
+            handles.add(bloom);
+        }
         for (long handle : handles) {
             if (handle != 0L) {
                 MetalNative.release(handle);

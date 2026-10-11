@@ -53,11 +53,14 @@ public final class MetalRenderPipeline implements BackendRenderPipeline, Destroy
     /** Terrain pipelines: stride of the per-section instance data and where the section's block position is in it (-1: unknown). */
     private final int sectionStride;
     private final int sectionPosOffset;
-    /** Pipeline states by variant (variant()): with or without a depth attachment, for the world or the hand. */
-    private final long[] states = new long[4];
+    /**
+     * Pipeline states by variant (variant()): with or without a depth attachment, for the world or the hand, for the
+     * game's own 8-bit targets or the floating-point one the world is drawn into with shaders on (RenderScale.hdr).
+     */
+    private final long[] states = new long[8];
     /** Variants started in the background when the pipeline was compiled (prebuildVariants), taken by stateFor. */
     @SuppressWarnings("unchecked")
-    private final java.util.concurrent.CompletableFuture<Long>[] variantBuilds = new java.util.concurrent.CompletableFuture[4];
+    private final java.util.concurrent.CompletableFuture<Long>[] variantBuilds = new java.util.concurrent.CompletableFuture[8];
     /** Fragment library with the metal shine for items held in first person (0: this pipeline has none). */
     private long handFragmentLibrary;
     private boolean closed;
@@ -323,7 +326,7 @@ public final class MetalRenderPipeline implements BackendRenderPipeline, Destroy
             long lib = device.shaders().compileTerrainLibrary(info.uniforms(), kind, MetalShaders.vertexLayoutDefines(info));
             java.util.Arrays.fill(uniformStages, MetalConst.STAGE_VERTEX | MetalConst.STAGE_FRAGMENT);
             MetalRenderPipeline pipeline = new MetalRenderPipeline(device, info, lib, "terrain_vertex", lib, "terrain_fragment", uniformStages, 0);
-            pipeline.stateFor(true);
+            pipeline.stateFor(true, false, true);
             pipeline.prebuildVariants();
             device.shaders().prebuildFor(pipeline);
             return pipeline;
@@ -435,6 +438,9 @@ public final class MetalRenderPipeline implements BackendRenderPipeline, Destroy
         return MetalShaders.ENABLED && (pipeline.equals("minecraft:pipeline/clouds") || pipeline.equals("minecraft:pipeline/flat_clouds"));
     }
 
+    private static final int LDR_FORMAT = MetalConst.format(com.mojang.renderpearl.api.GpuFormat.RGBA8_UNORM);
+    private static final int HDR_FORMAT = MetalConst.format(com.mojang.renderpearl.api.GpuFormat.RGBA16_FLOAT);
+
     private static int[] describe(final BackendRenderPipeline.CreateInfo info, final int alphaMode) {
         boolean markerAlpha = alphaMode != ALPHA_VANILLA;
         IntArrayList d = new IntArrayList();
@@ -481,24 +487,24 @@ public final class MetalRenderPipeline implements BackendRenderPipeline, Destroy
 
     /** Pipeline state matching a pass with or without a depth attachment. */
     long stateFor(final boolean hasDepth) {
-        return this.stateFor(hasDepth, false);
+        return this.stateFor(hasDepth, false, false);
     }
 
     /** The state for a pass with or without depth, for the first-person hand pass with the metal shine where this pipeline has it. */
-    long stateFor(final boolean hasDepth, final boolean hand) {
+    long stateFor(final boolean hasDepth, final boolean hand, final boolean hdr) {
         boolean shine = hand && this.handFragmentLibrary != 0L;
-        int variant = variant(hasDepth, shine);
+        int variant = variant(hasDepth, shine, hdr);
         long state = this.states[variant];
         if (state == 0L) {
             java.util.concurrent.CompletableFuture<Long> build = this.variantBuilds[variant];
-            state = build != null ? Prebuild.take(build, this.name) : this.createState(hasDepth, shine);
+            state = build != null ? Prebuild.take(build, this.name) : this.createState(hasDepth, shine, hdr);
             this.states[variant] = state;
         }
         return state;
     }
 
-    private static int variant(final boolean hasDepth, final boolean hand) {
-        return (hand ? 2 : 0) + (hasDepth ? 0 : 1);
+    private static int variant(final boolean hasDepth, final boolean hand, final boolean hdr) {
+        return (hdr ? 4 : 0) + (hand ? 2 : 0) + (hasDepth ? 0 : 1);
     }
 
     /**
@@ -508,22 +514,34 @@ public final class MetalRenderPipeline implements BackendRenderPipeline, Destroy
      * shader cache. Called while the pipeline is compiled, before anything draws with it.
      */
     private void prebuildVariants() {
-        for (boolean hand : new boolean[]{false, true}) {
-            if (hand && this.handFragmentLibrary == 0L) {
-                continue;
-            }
-            for (boolean hasDepth : new boolean[]{true, false}) {
-                int variant = variant(hasDepth, hand);
-                if (this.states[variant] == 0L) {
-                    this.variantBuilds[variant] = Prebuild.start(() -> this.createState(hasDepth, hand));
+        for (boolean hdr : MetalShaders.ENABLED ? new boolean[]{false, true} : new boolean[]{false}) {
+            for (boolean hand : new boolean[]{false, true}) {
+                if (hand && this.handFragmentLibrary == 0L) {
+                    continue;
+                }
+                for (boolean hasDepth : new boolean[]{true, false}) {
+                    int variant = variant(hasDepth, hand, hdr);
+                    if (this.states[variant] == 0L) {
+                        this.variantBuilds[variant] = Prebuild.start(() -> this.createState(hasDepth, hand, hdr));
+                    }
                 }
             }
         }
     }
 
-    private long createState(final boolean hasDepth, final boolean hand) {
+    private long createState(final boolean hasDepth, final boolean hand, final boolean hdr) {
         int[] desc = this.baseDescriptor.clone();
         desc[desc.length - 2] = hasDepth ? DEPTH_FORMAT : -1;
+        if (hdr) {
+            // The colour targets follow the vertex buffers (3 ints each) and attributes (4 each), 9 ints per target.
+            int i = 1 + desc[0] * 3;
+            i += 1 + desc[i] * 4;
+            for (int target = desc[i++]; target > 0; target--, i += 9) {
+                if (desc[i] == LDR_FORMAT) {
+                    desc[i] = HDR_FORMAT;
+                }
+            }
+        }
         return MetalNative.pipelineCreate(
             this.device.context(), this.vertexLibrary, this.vertexEntry, hand ? this.handFragmentLibrary : this.fragmentLibrary, this.fragmentEntry, desc,
             hand ? this.name + " (hand)" : this.name

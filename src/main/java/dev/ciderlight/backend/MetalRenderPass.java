@@ -30,6 +30,8 @@ public class MetalRenderPass implements RenderPassBackend {
     private final boolean main;
     /** The first-person "Item in hand" pass: item pipelines use their variant with the metal shine. */
     private final boolean hand;
+    /** The pass draws into the floating-point world target (RenderScale.hdr), which needs pipeline states of its own. */
+    private final boolean hdr;
     /** Set when another pipeline has bound its own resources over the slots MetalShaders.bindFrame fills for terrain. */
     private boolean frameSlotsTaken;
     private int debugGroups;
@@ -72,8 +74,9 @@ public class MetalRenderPass implements RenderPassBackend {
 
     MetalRenderPass(
         final MetalDevice device, final MetalCommandEncoder encoder, final long enc, final RenderPass.@Nullable RenderArea renderArea,
-        final int width, final int height, final boolean hasDepth, final boolean main, final boolean hand
+        final int width, final int height, final boolean hasDepth, final boolean main, final boolean hand, final boolean hdr
     ) {
+        this.hdr = hdr;
         this.main = main;
         this.hand = hand;
         this.device = device;
@@ -162,7 +165,7 @@ public class MetalRenderPass implements RenderPassBackend {
     private void applyPipeline() {
         MetalRenderPipeline p = this.pipeline;
         if (p != null && this.appliedPipeline != p) {
-            MetalNative.passSetPipeline(this.enc, p.stateFor(this.hasDepth, this.hand), p.depthState(), p.cull(), p.wireframe(), p.depthBias(), p.depthSlopeScale());
+            MetalNative.passSetPipeline(this.enc, p.stateFor(this.hasDepth, this.hand, this.hdr), p.depthState(), p.cull(), p.wireframe(), p.depthBias(), p.depthSlopeScale());
             this.appliedPipeline = p;
         }
     }

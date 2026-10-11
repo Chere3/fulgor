@@ -46,3 +46,7 @@ logs/
 output/
 releases/
 /*.png
+
+# fulgor
+
+bench-out/

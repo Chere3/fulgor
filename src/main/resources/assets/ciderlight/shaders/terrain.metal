@@ -364,7 +364,6 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
     // A reflection of the sky is ambient light too: corners and recesses see less of it.
     float aoShare = saturate(dot(albedo.rgb * occludable * diffuseShare + reflected, luma) / max(dot(color.rgb, luma), 1e-5));
     // Sunlit sand, snow and pale stone go above 1: roll them off instead of clipping them flat.
-    color.rgb = highlight_rolloff(color.rgb);
 #ifdef ALPHA_CUTOUT
     // Flames are light sources: drawn at full brightness, unshaded, whatever the light around them. Every emitter
     // sits in its own block light, so the sprite lookup is skipped everywhere else.

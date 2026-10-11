@@ -48,10 +48,12 @@ static float3 grade(float3 c) {
     // The contrast curve only applies to mid and bright tones; dark tones are left alone so nights stay readable
     // (Complementary lifts its tonemap off dark colours the same way).
     float l0 = dot(x, float3(0.2126, 0.7152, 0.0722));
-    x = mix(x, x * x * (3.0 - 2.0 * x) * 0.2 + x * 0.8, smoothstep(0.05, 0.3, l0));
+    x = mix(x, x * x * (3.0 - 2.0 * x) * 0.32 + x * 0.68, smoothstep(0.05, 0.3, l0));
     float l = dot(x, float3(0.2126, 0.7152, 0.0722));
-    x = mix(float3(l), x, 1.0);
-    x *= float3(1.01, 1.0, 0.98);
+    // Vivid, not neon: muted colours gain the most, already saturated ones (a clear sky, lava) little.
+    float chroma = max(x.r, max(x.g, x.b)) - min(x.r, min(x.g, x.b));
+    x = mix(float3(l), x, 1.0 + 0.28 * (1.0 - chroma));
+    x *= float3(1.015, 1.0, 0.975);
     return saturate(x);
 }
 
@@ -402,7 +404,7 @@ fragment float4 composite_fragment(VOut in [[stage_in]],
         }
         float3 sunShade = shade * mix(1.0, nightSky, 0.6);
         float3 torchShade = float3(1.05, 0.9, 0.7);
-        color = highlight_rolloff(color * mix(sunShade, max(sunShade, torchShade), saturate(torch * 1.5)));
+        color = color * mix(sunShade, max(sunShade, torchShade), saturate(torch * 1.5));
         // Mobs and items have no sky-light value here, so a lightning bolt brightens all of them around it.
         if (frame.lightning.w > 0.0) {
             float3 facing = dot(normal, ray.origin - worldPos) < 0.0 ? -normal : normal;
@@ -489,11 +491,7 @@ fragment float4 composite_fragment(VOut in [[stage_in]],
         return float4(float3(ao_lookup(ambientOcclusion, in.uv, length(worldPos), distanceGradient, ao_scale(frame)).x), 1.0);
     }
 #endif
-    color = grade(color);
-
-    // Soft vignette.
-    float2 v = in.uv - 0.5;
-    color *= 1.0 - dot(v, v) * 0.18;
+    // Still scene-referred: final_fragment tone-maps and grades it.
     return float4(color, 1.0);
 }
 
@@ -692,4 +690,103 @@ fragment float4 upscale_fragment(VOut in [[stage_in]], texture2d<float> source [
     float3 amount = sqrt(saturate(min(lo, 1.0 - hi) / max(hi, 1e-4)));
     float3 weight = -amount / mix(8.0, 5.0, UPSCALE_SHARPNESS);
     return float4(saturate((c + (n + s + w + e) * weight) / (1.0 + 4.0 * weight)), 1.0);
+}
+
+// Bloom (MetalShaders.bloom). Only what is brighter than a lit white surface glows: the sun and its glints on
+// water, flames, lava, the bright sky around the sun. KNEE softens where that starts, so the glow does not pop on as a
+// surface crosses the threshold.
+constant float BLOOM_THRESHOLD = 0.95;
+constant float BLOOM_KNEE = 0.25;
+constant float BLOOM_STRENGTH = 0.2;
+
+static float3 bloom_bright(float3 c) {
+    c = min(max(c, 0.0), 16.0);
+    float l = max(c.r, max(c.g, c.b));
+    float soft = clamp(l - BLOOM_THRESHOLD + BLOOM_KNEE, 0.0, 2.0 * BLOOM_KNEE);
+    soft = soft * soft / (4.0 * BLOOM_KNEE);
+    return c * max(soft, l - BLOOM_THRESHOLD) / max(l, 1e-4);
+}
+
+// Scene to a quarter size, keeping the bright part: four bilinear taps, each the mean of 2x2 texels. Each is weighted down by its own brightness (after
+// Karis's average), so one very bright pixel (a sun glint) does not flicker as a whole blob.
+fragment float4 bloom_prefilter_fragment(VOut in [[stage_in]], texture2d<float> source [[texture(0)]]) {
+    constexpr sampler lin(filter::linear, address::clamp_to_edge);
+    float2 texel = 1.0 / float2(source.get_width(), source.get_height());
+    float3 sum = float3(0.0);
+    float total = 0.0;
+    for (int i = 0; i < 4; i++) {
+        float2 o = float2(i & 1 ? 1.0 : -1.0, i & 2 ? 1.0 : -1.0);
+        float3 c = bloom_bright(source.sample(lin, in.uv + o * texel).rgb);
+        float w = 1.0 / (1.0 + max(c.r, max(c.g, c.b)));
+        sum += c * w;
+        total += w;
+    }
+    return float4(sum / total, 1.0);
+}
+
+// Half size again: the centre and four diagonal taps between texels (the "dual filter" blur's way down).
+fragment float4 bloom_down_fragment(VOut in [[stage_in]], texture2d<float> source [[texture(0)]]) {
+    constexpr sampler lin(filter::linear, address::clamp_to_edge);
+    float2 texel = 1.0 / float2(source.get_width(), source.get_height());
+    float3 c = source.sample(lin, in.uv).rgb * 4.0;
+    c += source.sample(lin, in.uv + float2(-texel.x, -texel.y)).rgb;
+    c += source.sample(lin, in.uv + float2(texel.x, -texel.y)).rgb;
+    c += source.sample(lin, in.uv + float2(-texel.x, texel.y)).rgb;
+    c += source.sample(lin, in.uv + float2(texel.x, texel.y)).rgb;
+    return float4(c / 8.0, 1.0);
+}
+
+// Back up: the smaller level, spread with a tent of eight taps, is added (by blending) onto the larger one.
+fragment float4 bloom_up_fragment(VOut in [[stage_in]], texture2d<float> source [[texture(0)]]) {
+    constexpr sampler lin(filter::linear, address::clamp_to_edge);
+    float2 texel = 0.5 / float2(source.get_width(), source.get_height());
+    float3 c = source.sample(lin, in.uv + float2(-2.0 * texel.x, 0.0)).rgb;
+    c += source.sample(lin, in.uv + float2(2.0 * texel.x, 0.0)).rgb;
+    c += source.sample(lin, in.uv + float2(0.0, -2.0 * texel.y)).rgb;
+    c += source.sample(lin, in.uv + float2(0.0, 2.0 * texel.y)).rgb;
+    c += source.sample(lin, in.uv + float2(-texel.x, texel.y)).rgb * 2.0;
+    c += source.sample(lin, in.uv + float2(texel.x, texel.y)).rgb * 2.0;
+    c += source.sample(lin, in.uv + float2(-texel.x, -texel.y)).rgb * 2.0;
+    c += source.sample(lin, in.uv + float2(texel.x, -texel.y)).rgb * 2.0;
+    return float4(c / 12.0, 1.0);
+}
+
+static float3 tone(float3 c) {
+    return grade(highlight_rolloff(max(c, 0.0)));
+}
+
+// The last pass over the world with shaders on: the floating-point scene, hand included, is tone-mapped, graded and
+// written to the window's 8-bit target before the HUD is drawn. With a render scale below 1 it also does what
+// upscale_fragment does, on the tone-mapped colours (the sharpening expects them within 0 to 1).
+// `glow` is the bloom to add: smooth at this scale, so the neighbours the sharpening reads share this pixel's.
+static float4 final_color(VOut in, texture2d<float> source, float3 glow) {
+    constexpr sampler lin(filter::linear, address::clamp_to_edge);
+    float3 c = tone(source.sample(lin, in.uv).rgb + glow);
+    // Source texels per window pixel: 1 at full scale, where there is nothing to sharpen.
+    if (abs(dfdx(in.uv.x)) * float(source.get_width()) < 0.99) {
+        float2 texel = 1.0 / float2(source.get_width(), source.get_height());
+        float3 n = tone(source.sample(lin, in.uv + float2(0.0, -texel.y)).rgb + glow);
+        float3 s = tone(source.sample(lin, in.uv + float2(0.0, texel.y)).rgb + glow);
+        float3 w = tone(source.sample(lin, in.uv + float2(-texel.x, 0.0)).rgb + glow);
+        float3 e = tone(source.sample(lin, in.uv + float2(texel.x, 0.0)).rgb + glow);
+        float3 lo = min(c, min(min(n, s), min(w, e)));
+        float3 hi = max(c, max(max(n, s), max(w, e)));
+        float3 amount = sqrt(saturate(min(lo, 1.0 - hi) / max(hi, 1e-4)));
+        float3 weight = -amount / mix(8.0, 5.0, UPSCALE_SHARPNESS);
+        c = saturate((c + (n + s + w + e) * weight) / (1.0 + 4.0 * weight));
+    }
+    // Soft vignette.
+    float2 v = in.uv - 0.5;
+    c *= 1.0 - dot(v, v) * 0.18;
+    return float4(c, 1.0);
+}
+
+fragment float4 final_fragment(VOut in [[stage_in]], texture2d<float> source [[texture(0)]], texture2d<float> bloom [[texture(1)]]) {
+    constexpr sampler lin(filter::linear, address::clamp_to_edge);
+    return final_color(in, source, bloom.sample(lin, in.uv).rgb * BLOOM_STRENGTH);
+}
+
+// -Dciderlight.bloom=false
+fragment float4 final_plain_fragment(VOut in [[stage_in]], texture2d<float> source [[texture(0)]]) {
+    return final_color(in, source, float3(0.0));
 }
