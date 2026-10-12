@@ -287,9 +287,10 @@ public final class Benchmark {
                 // comparison, tools/compare-biomes.sh), twelve blocks above its surface.
                 String biome = System.getProperty("ciderlight.benchBiome");
                 server.execute(() -> {
-                    if (biome != null) {
+                    // Several ids, comma separated: each one's place is logged (tools/biome-tour.sh reads them) and the last is hovered over.
+                    for (String name : biome == null ? new String[0] : biome.split(",")) {
                         net.minecraft.server.level.ServerLevel level = server.overworld();
-                        net.minecraft.resources.Identifier id = net.minecraft.resources.Identifier.parse(biome.contains(":") ? biome : "minecraft:" + biome);
+                        net.minecraft.resources.Identifier id = net.minecraft.resources.Identifier.parse(name.contains(":") ? name : "minecraft:" + name);
                         var found = level.findClosestBiome3d(holder -> holder.is(id), new net.minecraft.core.BlockPos(0, 80, 0), 6400, 32, 64); // from a fixed place: the same spot every run
                         if (found == null) {
                             LOGGER.error("Ciderlight bench: no biome {} within 6400 blocks", id);

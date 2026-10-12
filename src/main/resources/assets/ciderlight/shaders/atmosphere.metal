@@ -48,7 +48,7 @@ static AirMedium air_medium(constant FrameData &frame) {
     float sunHeight = frame.solarDir.w > 0.5 ? frame.solarDir.y : frame.sunDir.y;
     float dawn = exp(-pow((sunHeight - 0.08) / 0.28, 2.0));
     AirMedium medium;
-    medium.scale = float3(0.0026 * (0.55 + 0.75 * dawn), 0.0022, 0.00070) * frame.fogParams.z
+    medium.scale = float3(0.0026 * (0.55 + 0.75 * dawn), 0.0022, 0.00125) * frame.fogParams.z
                  * smoothstep(0.1, 0.6, frame.fogParams.x) * frame.airParams.z;
     medium.drift = float2(frame.params.x * 0.07, frame.params.x * 0.035);
     medium.base = frame.airParams.y;
@@ -90,7 +90,7 @@ static float3 atmosphere_sky(constant FrameData &frame, float3 direction) {
     daylight += mix(float3(0.12, 0.085, 0.05), float3(0.30, 0.22, 0.0), low) * pow(towardSun, 2.0) * haze * (0.35 + 0.35 * low);
     float3 colour = mix(night, daylight, day);
     float sunset = twilight * horizon * (0.12 + 0.88 * pow(towardSun, 3.0));
-    colour = mix(colour, float3(0.80, 0.61, 0.35), sunset * 0.92);
+    colour = mix(colour, float3(0.74, 0.59, 0.39), sunset * 0.92);
     // A softer violet band opposite the sun instead of a uniformly orange sky.
     colour += float3(0.075, 0.017, 0.065) * twilight * horizon * pow(1.0 - towardSun, 2.0);
     float forward = pow(saturate(dot(V, sun)), 18.0);
@@ -107,7 +107,7 @@ static float3 atmosphere_sky(constant FrameData &frame, float3 direction) {
 // shades the ground under the same shapes (soft_cloud_map_fragment).
 constant float CLOUD_SCALE = 640.0;     // blocks across the broadest shapes
 constant float CLOUD_DRIFT = 1.4;       // blocks per second, towards +x
-constant float CLOUD_TRANSMISSION_SOFT = 0.58; // of the sunlight, through the thickest part
+constant float CLOUD_TRANSMISSION_SOFT = 0.85; // of the sunlight, through the thickest part
 
 constant float CLOUD_THICKNESS = 230.0; // blocks, base to top
 constant int CLOUD_STEPS = 5;
@@ -121,7 +121,7 @@ static float cloud_field(float2 p, float time) {
 }
 
 static float cloud_threshold(float rain) {
-    return mix(0.58, 0.05, saturate(rain)); // rain: one unbroken grey deck
+    return mix(0.63, 0.05, saturate(rain)); // rain: one unbroken grey deck
 }
 
 // How much cloud is over the world position `p` (xz), seen from above or below: x where there is cloud at all (a
@@ -149,7 +149,7 @@ static float3 cloud_layer(constant FrameData &frame, float3 direction, float3 sk
     // In the shade the sky's colour with a little rose; bright where the light reaches: the tops, and the side
     // turned to the light (one more look-up a little way towards it tells how much cloud it crossed to get here).
     float3 shade = frame.surfaceAmbient.rgb * float3(1.40, 1.22, 1.34);
-    float3 sun = frame.surfaceSun.rgb * (0.78 * frame.sunDir.w);
+    float3 sun = frame.surfaceSun.rgb * (0.66 * frame.sunDir.w);
     float2 toLight = normalize(frame.sunDir.xz + float2(1e-4, 0.0)) * (1.0 - 0.6 * abs(frame.sunDir.y));
     float2 middle = frame.cameraPos.xz + direction.xz * ((base + 0.3 * CLOUD_THICKNESS) / direction.y);
     float crossed = cloud_cover(middle + toLight * 170.0, frame.params.x, rain).y;

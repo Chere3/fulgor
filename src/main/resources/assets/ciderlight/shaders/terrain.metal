@@ -327,7 +327,7 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
     float3 sky = skyAmbient + skyScale * sunLight;
 
     // Block light (torch_light), washed out under direct daylight.
-    float3 blockTerm = float3(1.0, 0.56, 0.20) * torch_light(blockL) * faceShade;
+    float3 blockTerm = float3(0.88, 0.49, 0.18) * torch_light(blockL) * faceShade;
     // Under open daylight block light mostly disappears, as it does outdoors in real life.
     float daylight = skyL * skyL * frame.lightParams.x;
     blockTerm *= 1.0 - 0.8 * daylight * (0.6 + 0.4 * dot(direct, float3(0.333)));
@@ -399,6 +399,7 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
         // Ice is drawn nearly opaque so the water underneath (and its reflections) hardly show through it.
         if (!water && n.y > 0.7 && sprite_kind(spriteMap, in.uv0) == SPRITE_ICE) {
             color.a = max(color.a, 0.94);
+            color.rgb *= float3(0.55, 0.68, 0.88); // sunlit ice is a pale blue sheet, not burnt-out white
         }
         // Only the underside, seen from below, keeps the vanilla look.
         if (water && n.y > -0.3) {
@@ -481,11 +482,13 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
             th = mix(th, leaving ? 0.0 : (endsFirst ? 2.0 : max(th, 2.0)), side);
             float3 transmittance = exp(-water_absorption(in.color.rgb) * th);
             float murk = 1.0 - exp(-th * 0.032);
-            // Scattered light from deep water: the biome hue pulled towards teal, with only a trace of the vanilla
-            // texture's pattern so the surface reads as water rather than as a tiled sprite.
+            // Scattered light from deep water: one teal with only a tenth of the biome's hue (the reference's sea
+            // is the same colour everywhere), and only a trace of the vanilla texture's pattern so the surface reads
+            // as water rather than as a tiled sprite.
             float texDetail = mix(1.0, dot(texel.rgb, float3(0.3333)) / 0.62, 0.2);
-            float3 deep = sqrt(saturate(in.color.rgb)) * float3(0.13, 0.36, 0.52) * texDetail * light;
+            float3 deep = mix(float3(0.51, 0.88, 0.96), sqrt(saturate(in.color.rgb)), 0.1) * float3(0.17, 0.42, 0.59) * texDetail * light;
             deep = mix(deep, float3(dot(deep, float3(0.2126, 0.7152, 0.0722))), 0.15); // a clear turquoise, short of neon
+            deep *= 1.0 - 0.28 * murk * murk; // the open sea, with no floor in sight, is the darkest water
             float3 under = mix(seen * transmittance, deep, murk);
 
             // --- shoreline foam where the water is only a sliver deep ---
@@ -506,11 +509,14 @@ fragment float4 terrain_fragment(VertexOut in [[stage_in]],
 #ifdef MC_SOFT_CLOUDS
             sky = cloud_layer(frame, R, sky);
 #endif
+            // The sky on screen is pale with haze near the horizon; its mirror image is too, or far water is a dark
+            // band under a bright horizon.
+            sky *= 1.0 + 0.45 * exp(-max(R.y, 0.0) * 5.0);
             // Covered water (low sky light) must not mirror a bright sky it cannot see.
             float3 reflColor = mix(deep, sky, smoothstep(0.3, 0.95, skyL));
-            // Schlick's curve with a softer exponent than 5: a little more mirror at the shallow angles water is
-            // mostly seen at, so the banks and sky show in it as they do on a calm river.
-            float mirror = min(0.02 + 0.98 * pow(1.0 - saturate(dot(-V, nn)), 3.5), 0.92);
+            // Far more of a mirror than Schlick's curve gives water: as in the reference, the sky and its clouds show
+            // in it from any but a steep angle, and the water's own colour only close below the camera.
+            float mirror = min(0.02 + 0.98 * pow(1.0 - saturate(dot(-V, nn)), 1.9), 0.92);
             // Seen from steeply above, water reflects about 2% of what is over it: whether that is the traced scene
             // or the sky cannot be told apart, so the ray is only traced where the reflection shows. The hand-over is
             // spread over a wide range of angles: a narrow one shows as a line across the water when looking down.

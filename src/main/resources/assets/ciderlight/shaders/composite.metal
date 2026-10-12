@@ -168,7 +168,7 @@ static AirVolume march_air(constant FrameData &frame, depth2d<float> nearMap, de
     float3 ambient = atmosphere_ambient(frame) * 0.35;
     // Far away the air takes on the colour of the sky behind it (aerial perspective): distant hills fade into the
     // pale horizon rather than into a dark blue veil. Nearby, the dimmer fill keeps shafts and shade contrasty.
-    float3 skyBehind = atmosphere_sky(frame, V) * (skyRay ? 0.84 : 0.85);
+    float3 skyBehind = atmosphere_sky(frame, V) * (skyRay ? float3(0.82, 0.85, 0.88) : float3(0.95, 1.0, 1.12)); // the haze is the sky's blue, not white
     // The low sun lights the mist most strongly (golden hour), and keeps doing so until it is at the horizon, but
     // somewhat less than at noon: looking towards it, the haze around the sun would glare.
     float3 direct = frame.sunColor.rgb * frame.sunDir.w * (moon ? 0.5 : 1.65 * (1.0 - 0.2 * frame.airNear.z))
@@ -200,7 +200,7 @@ static AirVolume march_air(constant FrameData &frame, depth2d<float> nearMap, de
         // scatters, and the dim fill would lay a grey veil over its blue.
         float3 incident = skyRay ? skyBehind : mix(ambient, skyBehind, smoothstep(48.0, 200.0, distance));
         // Rain mist is pale: lit from all around by the overcast, a little brighter than the cloud deck behind it.
-        incident = mix(incident, skyBehind * (skyRay ? 1.0 : 1.1), saturate(frame.params.y));
+        incident = mix(incident, skyBehind * (skyRay ? 1.0 : 0.88), saturate(frame.params.y));
         // A step that scatters next to nothing (thin air high up) is not worth the shadow lookups.
         if (lit && density * width > 1e-4) {
             incident += direct * air_visibility(frame, nearMap, farMap, compare, transmission, farTransmission, cloudMap, p,
@@ -246,7 +246,7 @@ static float3 march_water(constant FrameData &frame, depth2d<float> shadowMap, s
     float3 sun = frame.sunColor.rgb * frame.sunDir.w * (moon ? 0.14 : 1.1)
                * smoothstep(0.0, 0.2, frame.sunDir.y);
     // Looking up, the bright sky shows through the surface.
-    float3 ambient = float3(0.50, 0.60, 0.64) * (1.0 + 1.2 * saturate((V.y - 0.2) * 3.0)) * frame.waterParams.z
+    float3 ambient = float3(0.50, 0.57, mix(0.76, 0.54, smoothstep(-0.3, 0.0, V.y))) * (1.0 + 1.2 * saturate((V.y - 0.2) * 3.0)) * frame.waterParams.z
                   * mix(0.15, 1.0, frame.lightParams.x);
     float3 sum = float3(0.0);
     const int steps = WATER_STEPS;

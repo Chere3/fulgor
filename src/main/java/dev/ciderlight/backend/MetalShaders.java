@@ -161,7 +161,7 @@ public final class MetalShaders {
     /** Above this half-width (blocks) the distant map doubles its resolution, so long render distances keep sharp shafts. */
     private static final float FAR_SHADOW_FINE_RADIUS = 320.0F;
     /** Frames the distant shadow map is drawn over, a vertical strip in each (renderFarShadowMap). */
-    private static final int FAR_STRIPS = 4;
+    private static final int FAR_STRIPS = 8;
     private static final float[][] SHADOW_JITTER = {
         {-0.375F, -0.125F}, {0.125F, -0.375F}, {0.375F, 0.125F}, {-0.125F, 0.375F},
         {-0.375F, 0.375F}, {0.375F, -0.375F}, {0.125F, 0.125F}, {-0.125F, -0.125F}
@@ -2736,9 +2736,9 @@ public final class MetalShaders {
         }
         if (!moon) {
             float noon = (float)Math.sqrt(Math.max(sun.y, 0.0F));
-            surfaceSun[0] = lerp(1.75F, 1.54F, noon);
-            surfaceSun[1] = lerp(0.86F, 1.33F, noon);
-            surfaceSun[2] = lerp(0.36F, 1.04F, noon);
+            surfaceSun[0] = lerp(1.75F, 1.47F, noon);
+            surfaceSun[1] = lerp(0.86F, 1.35F, noon);
+            surfaceSun[2] = lerp(0.36F, 1.14F, noon);
             surfaceAmbient[0] = lerp(0.68F, 0.56F, noon);
             surfaceAmbient[1] = lerp(0.56F, 0.62F, noon);
             surfaceAmbient[2] = lerp(0.76F, 0.80F, noon);
@@ -2746,16 +2746,16 @@ public final class MetalShaders {
             float m = lerp(0.75F, 1.0F, moonLight);
             // A dark night, as in the reference: shapes are readable against the sky, and torchlight owns what it reaches.
             // (The game's own night light map already tints sky light blue; more blue here turns stone violet.)
-            surfaceSun[0] = 0.55F * m;
-            surfaceSun[1] = 0.62F * m;
-            surfaceSun[2] = 0.72F * m;
-            surfaceAmbient[0] = 0.28F;
-            surfaceAmbient[1] = 0.31F;
-            surfaceAmbient[2] = 0.33F;
+            surfaceSun[0] = 0.48F * m;
+            surfaceSun[1] = 0.54F * m;
+            surfaceSun[2] = 0.58F * m;
+            surfaceAmbient[0] = 0.21F;
+            surfaceAmbient[1] = 0.22F;
+            surfaceAmbient[2] = 0.20F;
         }
         // Under rain clouds the light is flat and grey: the sun fades (strength) and the sky light loses its blue.
         for (int i = 0; i < 3; i++) {
-            surfaceAmbient[i] = lerp(surfaceAmbient[i], 0.19F - 0.02F * i, rain);
+            surfaceAmbient[i] = lerp(surfaceAmbient[i], 0.165F - 0.02F * i, rain);
         }
 
         // Shadow volume centred on the camera, snapped to whole shadow-map texels in the light's view so shadow edges

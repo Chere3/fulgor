@@ -41,7 +41,7 @@ static WaterWaves water_waves(float2 world, float time, float footprint, float r
     const float2x2 turn = float2x2(float2(-0.737, 0.676), float2(-0.676, -0.737));
     float2x2 basis = float2x2(float2(1.0, 0.0), float2(0.0, 1.0));
     float frequency = 0.16;     // cycles per block: ~6 block swells down to ~0.25 block chop
-    float weight = 0.115;       // slope contributed by this octave
+    float weight = 0.078;       // slope contributed by this octave
     float speed = 0.22;
     for (int i = 0; i < WATER_OCTAVES; i++) {
         float wavelength = 1.0 / frequency;

@@ -58,7 +58,10 @@ en `bench-out/cmp-<nombre>-{fulgor,sildur}.png`. Si la pantalla está bloqueada 
 Validación (no basta con mirar): `python3 tools/compare-stats.py [nombre...]` parte cada par en tres bandas (cielo,
 horizonte, suelo), compara el color medio y falla si algún canal se aleja más de 24/255; sin nombres revisa todos los
 pares. `tools/compare-biomes.sh [bioma...]` saca el par de cada bioma (`-PbenchBiome=<id>` coloca la cámara 12 bloques
-sobre el bioma más cercano) y deja la tabla en `bench-out/biomes.md`; unos dos minutos por bioma. Las nubes se mueven
+sobre el bioma más cercano) y deja la tabla en `bench-out/biomes.md`; unos dos minutos por bioma.
+`tools/biome-tour.sh [bioma...]` hace lo mismo en una sola sesión por lado: un datapack en una copia del mundo
+(`fulgor-tour`) teletransporta al jugador de bioma en bioma y lo anuncia en el log, y el script fotografía la ventana
+(`SIDES=fulgor` para repetir sólo nuestro lado, `DWELL` segundos por bioma). Las nubes se mueven
 entre corridas, así que una banda puede variar ~10/255 por sí sola.
 
 Lo aprendido de esos pares: de cerca Vibrant es contrastado (sol inclinado que ilumina las caras laterales al mediodía,
@@ -66,8 +69,35 @@ cielo azul profundo, sombras oscuras); a distancia es pastel por la bruma azulad
 rosada; atardecer amarillo junto al sol que pasa a rosa; noche gris azulada y oscura. Nether claro (niebla gris
 rosada, lava naranja que brilla) y End de piedra crema con obsidiana violeta bajo cielo negro.
 
-Rendimiento medido en el M4 (1600x900, distancia 16, misma escena, 11 oct 2026): Sildur's High sobre Iris ~15 fps;
-Fulgor High ~44-49 fps; Fulgor Low (por defecto en el M4, mundo al 67 %) ~64-111 fps según la carga de la máquina.
+Rendimiento medido en el M4 (1600x900, distancia 16, escena de mediodía, 12 oct 2026, load average 6-10), mismo
+instrumento en ambos lados: contador de fps de F3, 30 lecturas con `screencapture` cada 5 s durante dos minutos y
+medio, tras 25-40 s de calentamiento:
+
+| | lecturas | mediana | benchmark propio (25 s) |
+|---|---|---|---|
+| Sildur's Vibrant High sobre Iris | 29-37 el primer minuto, luego 39-45 | 43 | - |
+| Fulgor por defecto en el M4 (Low: sombras 2048, mundo al 67 %; con esto se validó el look) | 59-73 | 70 | 79 |
+| Fulgor igualado a Sildur's High (`-Pquality=low -PrenderScale=1`: sombras 2048, resolución completa) | 50-63 | 59 | 66 |
+| Fulgor High (sombras 4096 + cascada lejana 2048/4096 + volumétricos) | 31-51 | 49 | 61 |
+
+Es decir ~1,6x por defecto, ~1,4x con ajustes igualados y ~1,1x en High. La comparación igualada se repitió en
+rondas alternadas de 20 lecturas: Sildur's 43, 40 y 42 de mediana; Fulgor 59, 58, 53 y 58 (toda ronda de Fulgor por
+encima de toda ronda de Sildur's). Ojo al medir Sildur's: comprobar que el mundo quedó en la escena de mediodía (tras
+la escena del End da más de 100 fps mirando cielo negro). El High de Sildur's es un solo mapa de
+2048 a 80 bloques, sin volumétricos (su `shaders.settings`), así que la fila comparable es la tercera. Sildur's tarda
+un minuto en estabilizarse: sus lecturas del primer minuto (15-27 fps en mediciones anteriores) no valen.
+Con `-PgpuProfile=true` el cuadro de High son ~18 ms de GPU y la geometría de sombras es lo más caro (mapa cercano
+3,5 ms de vértices, lejano 2 ms); el lejano se reparte en `FAR_STRIPS = 8` cuadros (con 4 costaba 3,3 ms).
+Para ver el contador sin teclado (osascript no entrega teclas al juego) se crea temporalmente `debug-profile.json`
+con `{"custom":{"minecraft:fps":"alwaysOn"}}` en la carpeta del juego y se pone `inactivityFpsLimit:"minimized"` en
+`options.txt` (con "afk" topa a 30 fps al minuto sin entrada); ambos se restauran después.
+
+Estado de la validación (12 oct 2026): tres pasadas completas seguidas (las dos primeras con el mismo código, la tercera tras
+`FAR_STRIPS = 8`) dieron 60/60 bandas en los 20 biomas y 27/27 en las 9 escenas fijas
+(`bench-out/{biomes,scenes}-{D,E,F}.md`), peor banda 21-23. Lo que más costó
+encontrar: el mar lejano de Sildur's es un espejo claro del horizonte (el cielo reflejado necesita la misma palidez
+de bruma que el cielo en pantalla), el mar es de un solo color y se oscurece con la profundidad, las nubes no dan
+sombra al suelo y son menos blancas, el hielo es azul pálido.
 
 ## Hoja de ruta
 

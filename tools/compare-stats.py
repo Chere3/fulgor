@@ -11,12 +11,12 @@ from PIL import Image, ImageStat
 LIMIT = 24
 OUT = os.path.join(os.path.dirname(__file__), "..", "bench-out")
 
-def bands(path, aspect=None):
+def bands(path):
     image = Image.open(path).convert("RGB")
-    if aspect and image.height > image.width / aspect + 4:  # a window photograph: drop its title bar
-        image = image.crop((0, image.height - round(image.width / aspect), image.width, image.height))
+    if image.height > image.width * 9 / 16 + 4:  # a window photograph: drop its title bar (the game is 16:9)
+        image = image.crop((0, image.height - round(image.width * 9 / 16), image.width, image.height))
     small = image.resize((16, 9), Image.BOX)
-    return [ImageStat.Stat(small.crop((0, y, 16, y + 3))).mean for y in (0, 3, 6)], image.width / image.height
+    return [ImageStat.Stat(small.crop((0, y, 16, y + 3))).mean for y in (0, 3, 6)]
 
 names = sys.argv[1:] or sorted(os.path.basename(p)[4:-11] for p in glob.glob(os.path.join(OUT, "cmp-*-sildur.png")))
 failed = 0
@@ -25,8 +25,7 @@ for name in names:
     ours, their = (os.path.join(OUT, f"cmp-{name}-{side}.png") for side in ("fulgor", "sildur"))
     if not (os.path.exists(ours) and os.path.exists(their)):
         print(f"| {name} | | missing | | | FAIL |"); failed += 1; continue
-    a, aspect = bands(ours)
-    b, _ = bands(their, aspect)
+    a, b = bands(ours), bands(their)
     for band, x, y in zip(("top", "mid", "bot"), a, b):
         worst = max(abs(p - q) for p, q in zip(x, y))
         ok = worst <= LIMIT
