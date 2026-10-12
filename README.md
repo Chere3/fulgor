@@ -1,79 +1,103 @@
-# Ciderlight
+# Fulgor
 
-A Fabric (and NeoForge, beta) mod for Minecraft Java **26.3** that adds a native **Apple Metal** rendering backend and a
-built-in, Metal-native shader pipeline.
+**Vibrant shaders for Minecraft Java 26.3 on Apple Silicon, rendered natively with Metal.**
 
-Download from [CurseForge](https://www.curseforge.com/minecraft/mc-mods/ciderlight).
+![Sunset over the ocean with Fulgor](docs/screenshots/sunset.jpg)
 
-Minecraft 26.3 split its renderer into swappable backends (OpenGL and Vulkan). Ciderlight adds a third that talks to
-Metal through a small Objective-C bridge (`src/main/native/ciderlight.m`) called via Java's FFM API. The game's GLSL
-shaders are compiled to SPIR-V and translated to Metal Shading Language with SPIRV-Cross, so vanilla rendering,
-resource packs and core-shader packs keep working.
+Fulgor is a Fabric mod that gives Minecraft the warm, saturated look of the classic "vibrant" shader packs — tilted
+sun, soft volumetric clouds, turquoise water, long shadows, bloom — without OpenGL, Iris or a shader pack. It is a fork
+of [Ciderlight](https://github.com/riccqi/ciderlight) by Richard Qi, which adds a native Metal rendering backend to
+the game; Fulgor builds an HDR pipeline and a new look on top of it.
+
+The visual reference is [Sildur's Vibrant Shaders](https://sildurs-shaders.github.io/). Fulgor is not a port: no code
+from Sildur's is used, every shader is original Metal Shading Language, and the two projects are not affiliated.
+
+> **Status: alpha.** It runs and looks as shown here, but there are no prebuilt releases yet and several settings
+> are still JVM flags. Expect rough edges.
+
+## Side by side
+
+Same world, seed, position and time of day; left is the reference running on Iris + Sodium, right is Fulgor.
+
+![Sildur's Vibrant High next to Fulgor at noon](docs/screenshots/compare-noon.jpg)
+
+## Gallery
+
+| | |
+|---|---|
+| ![Noon over a savanna coast](docs/screenshots/noon.jpg) | ![Savanna hilltop](docs/screenshots/ground.jpg) |
+| ![Cherry grove](docs/screenshots/cherry_grove.jpg) | ![Badlands river](docs/screenshots/badlands.jpg) |
+| ![Jagged peaks](docs/screenshots/jagged_peaks.jpg) | ![Meadow](docs/screenshots/meadow.jpg) |
+| ![Warm ocean](docs/screenshots/warm_ocean.jpg) | ![Snowy plains](docs/screenshots/snowy_plains.jpg) |
+| ![Underwater light shafts](docs/screenshots/underwater.jpg) | ![Rain](docs/screenshots/rain.jpg) |
+| ![The Nether](docs/screenshots/nether.jpg) | ![The End](docs/screenshots/end.jpg) |
+
+All screenshots are unedited captures at the default quality for a base M4 (Low).
 
 ## Performance
 
-M1 Pro, 1708x960, render distance 16, vsync off, same jungle scene:
+MacBook with a base M4 and 16 GB, 1600x900 window, render distance 16, the noon scene above. Both sides are read
+from the game's own F3 fps counter every 5 seconds after a one-minute warm-up; the number is the median.
 
-| Configuration                    | Median FPS | 1% low |
-|----------------------------------|-----------:|-------:|
-| Vanilla OpenGL                   |       95.4 |   26.5 |
-| Ciderlight, shaders off          |      215.7 |  109.2 |
-| Ciderlight, shaders on           |      191.9 |  126.5 |
-| Ciderlight, shaders on, raining  |      160.9 |  103.1 |
+| Configuration | Median fps | vs. reference |
+|---|---:|---:|
+| Sildur's Vibrant High on Iris + Sodium (reference) | 43 | 1.0x |
+| Fulgor, default on this Mac (Low: 2048 shadows, world at 67% scale) | 70 | 1.6x |
+| Fulgor, matched settings (2048 shadows, full resolution) | 59 | 1.4x |
+| Fulgor High (4096 shadows, far shadow cascade, volumetric light) | 49 | 1.1x |
 
-Later optimisations raised shaders-on further (164–173 → 205–208 median FPS on another test save); the frame is
-now CPU-limited. Reproduce with `./gradlew runClient -Pworld=<save> -Pbench=20` (add `-Pvanilla` or `-Pnoshaders`).
+The matched comparison was repeated in alternating rounds: the reference gave medians of 43, 40 and 42 fps, Fulgor
+59, 58, 53 and 58. Fulgor's High does more work than the reference's High (which uses a single 2048 shadow map and
+no volumetrics), so the matched row is the fair one. The other two Fulgor rows were measured once. This is one
+machine and one scene; your numbers will differ.
 
-## Shaders
+## How close is the look?
 
-Written for this backend, not ported from an OptiFine/Iris pack, so they only run on Ciderlight.
+Close enough to measure. `tools/biome-tour.sh` teleports through 20 biomes in both games and photographs each one,
+and `tools/compare-stats.py` splits every pair of screenshots into sky, horizon and ground bands and fails if any
+colour channel's mean differs by more than 24/255. Three consecutive full runs passed 60 of 60 biome bands and 27 of
+27 bands across nine fixed scenes (noon, sunset, night, rain, underwater, torchlight, Nether, End and a ground-level
+view), with the worst band at 21–23.
 
-- **Lighting**: sun-aware direct and sky light replacing vanilla's fixed face shading, warm torch falloff, full-bright flames.
-- **Held light**: torches, lanterns and other light sources in hand light the area around the player (and other players).
-- **Shadows**: real-time sun and moon shadows, including foliage, with coloured light through stained glass, ice and water.
-- **Sky and atmosphere**: directional sky gradient, layered volumetric mist with light shafts and aerial perspective.
-- **Ambient occlusion**: screen-space GTAO for soft contact shadows.
-- **Waving foliage**: leaves, grass, crops and vines sway in a world-anchored wind, shadows included.
-- **Clouds**: opaque, volume-shaded clouds lit by the sun's position.
-- **Water**: animated waves, refraction, depth absorption, foam, sun glint, rain ripples and screen-space reflections.
-- **Underwater**: volumetric light, absorption and caustics.
-- **Composite**: sun rays, a gentle filmic grade and vignette.
+That is a statement about overall colour and brightness, not a pixel match. Known differences: soul fire stays cyan
+as in vanilla, the sky is not visible through the water surface from below, and cloud shapes are our own.
 
-Visual references: Complementary Shaders and Bliss (Chocapic13 edit). All Metal code is original.
+## What it does
 
-### Settings
-
-Open **Options > Video Settings > Ciderlight...** (under the graphics preset):
-
-- **Shaders**: Off (Metal renderer, vanilla look), Low or High. A-series GPUs and the plain M1, M2, M3 and M4 default to
-  Low (smaller shadow maps, fewer samples, lighter water reflections, world drawn at about two thirds resolution);
-  everything else defaults to High.
-- **Shadows**, **Waving Plants**, **Water Reflections**, **Water Waves**, **Ambient Occlusion**: each on by default. Shadows off also
-  skips the shadow maps and light shafts, which is the biggest saving.
-- **Render Scale**: the world's resolution, Auto (the quality's own) or 50 to 100%.
-
-Shadows and Ambient Occlusion apply at once; everything else applies after a restart. All of it is saved in
-`config/ciderlight.properties`.
-
-JVM `-D` overrides: `ciderlight.quality=low|high`, `ciderlight.shaders=false`, `ciderlight.renderScale=<0.25–1>`,
-`ciderlight.shadowSize`, `ciderlight.shadowDistance`, `ciderlight.fogDistance`, `ciderlight.waterReflections=false`, `ciderlight.waterWaves=false`,
-`ciderlight.waving=false`, `ciderlight.ao=false`, `ciderlight.shadows=false`, `ciderlight.framePacing=true`, `ciderlight.debug=true`,
-`ciderlight.disable=true` (fall back to vanilla backends). An override wins over the settings page, which greys that
-option out.
+- **HDR pipeline**: the world is drawn into an HDR target, with bloom and a hue-preserving tone map.
+- **Sun and sky**: sun path tilted 40 degrees so side faces catch light at noon, deep blue sky, yellow-to-pink sunsets,
+  dark blue-grey nights.
+- **Clouds**: soft volumetric cumulus lit by the sun.
+- **Shadows**: real-time sun and moon shadows with a far cascade, including foliage and coloured light through
+  stained glass, ice and water.
+- **Water**: turquoise shallows, waves, refraction, depth absorption, screen-space reflections, rain ripples.
+- **Atmosphere**: distance haze, volumetric light shafts, pale rain mist, blue underwater fog with caustics.
+- **Dimensions**: a hazy Nether with glowing lava, and an End with its own lighting.
+- **Also**: temporal anti-aliasing, GTAO ambient occlusion, waving foliage, light from held torches.
 
 ## Installing
 
-1. Install Fabric Loader for Minecraft 26.3 (https://fabricmc.net/use/installer/).
-2. Download the latest Ciderlight JAR from [Releases](https://github.com/riccqi/ciderlight/releases) and copy it into `~/Library/Application Support/minecraft/mods/`.
-3. Launch the Fabric profile. Ciderlight is client-side only, so it works on any server.
+There are no prebuilt jars yet, so build it yourself (see below) and copy `build/libs/ciderlight-<version>.jar` into
+the `mods` folder of a Fabric 26.3 instance. The jar keeps the upstream name for now.
 
-For NeoForge (beta), install NeoForge for 26.3 instead and use the `ciderlight-neoforge-<version>.jar`. Optionally add
-`--enable-native-access=ciderlight` to the JVM arguments to silence Java's native-access warning, and leave NeoForge's
-version check on: with it off, NeoForge 26.3's title screen crashes.
+- Requires an Apple Silicon Mac on macOS 14 or later, Minecraft Java 26.3 and Fabric Loader.
+- Client-side only; works on any server.
+- Do not install it together with Ciderlight, Sodium, Iris or Sodium Extra. Fulgor replaces the first, and the others
+  need a draw call the Metal backend does not provide, so Fabric will refuse to launch.
 
-Don't install Sodium, Iris or Sodium Extra alongside it: Fabric won't launch with them (see [Known limitations](#known-limitations)).
+## Settings
 
-Requires an Apple Silicon Mac on macOS 14 or later. On other machines the mod turns itself off and the game uses its default renderer.
+Open **Options > Video Settings > Ciderlight...**:
+
+- **Shaders**: Off (Metal renderer, vanilla look), Low or High. A-series GPUs and the plain M1, M2, M3 and M4 default
+  to Low; everything else defaults to High.
+- **Shadows**, **Waving Plants**, **Water Reflections**, **Water Waves**, **Ambient Occlusion**: each on by default.
+- **Render Scale**: the world's resolution, Auto or 50 to 100%.
+
+Everything is saved in `config/ciderlight.properties`. The options Fulgor adds are JVM flags for now:
+`-Dciderlight.taa=false`, `-Dciderlight.clouds=vanilla`, `-Dciderlight.sunTilt=<degrees>`. Upstream's flags
+(`ciderlight.quality`, `ciderlight.renderScale`, `ciderlight.shadowSize`, `ciderlight.shadows=false` and the rest)
+still work.
 
 ## Building
 
@@ -82,26 +106,24 @@ Requires Xcode command-line tools and a Java 25 JDK (set `JAVA_HOME` to it).
 ```
 ./gradlew build                 # jar in build/libs/
 ./gradlew runClient             # dev client
-./gradlew installMod            # build and copy into the launcher's mods folder
-./gradlew -p neoforge build     # NeoForge jar in neoforge/build/libs/ (same sources, a build of its own)
-./gradlew -p neoforge runClient # NeoForge dev client (its asset download needs a Java 21 runtime too)
 python3 tests/check_shaders.py  # compile shader variants and run GPU regressions
 ```
 
-[GitHub Actions](https://github.com/riccqi/ciderlight/actions/workflows/build.yml) builds the JAR and native library
-from source; releases use that build's JAR unchanged.
+To reproduce the comparison you need a Prism Launcher instance with Fabric, Sodium, Iris and the reference pack;
+`tools/compare-sildurs.sh`, `tools/biome-tour.sh` and `tools/compare-stats.py` do the rest.
 
-## Known limitations
+## Roadmap
 
-- Ambient occlusion and reflections only see what is on screen.
-- Entities in caves can be darkened by the sun shadow test.
-- No bloom/HDR.
-- OptiFine/Iris shader packs (e.g. Complementary) are not supported.
-- NeoForge (beta): stencil tests that NeoForge lets mods add to pipelines are not applied yet.
-- Sodium (and add-ons that need it, such as Iris and Sodium Extra) can't run alongside Ciderlight: Sodium's
-  chunk renderer uses a multi-draw call the Metal backend doesn't provide. Fabric will refuse to launch and list them as incompatible; this is intentional.
-  Remove them from the mods folder.
+- Bloom, TAA, cloud and sun-tilt options in the settings screen.
+- Faster High quality; shadow geometry is the most expensive part of the frame.
+- Cloud shadows on terrain above the cloud layer.
+- Prebuilt releases under Fulgor's own name.
 
-## License
+## Credits and license
 
-Copyright 2026 Richard Qi. [Apache License 2.0](LICENSE); keep the [NOTICE](NOTICE) file when redistributing.
+- [Ciderlight](https://github.com/riccqi/ciderlight) by Richard Qi: the Metal backend and the shader pipeline this
+  fork starts from. If you want the Metal renderer with a look closer to vanilla, use Ciderlight.
+- [Sildur's Vibrant Shaders](https://sildurs-shaders.github.io/) by Sildur: the visual reference.
+
+[Apache License 2.0](LICENSE). Copyright 2026 Richard Qi for Ciderlight; changes in this fork are by their
+authors, as recorded in the git history. Keep the [NOTICE](NOTICE) file when redistributing.
